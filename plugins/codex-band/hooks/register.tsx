@@ -11,6 +11,8 @@ const EMPTY: CodexSnapshot = { found: false, jobs: [], checkedAt: 0 }
 const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-1' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
 
+// A job the Codex plugin never closed (its process died) stays 'running' forever.
+const STALE_MS = 2 * 60 * 60 * 1000
 const active = (job: CodexJob) => job.status === 'queued' || job.status === 'running'
 
 function minutesSince(iso: string | null, now: number) {
@@ -38,14 +40,18 @@ export const register: Register = on => {
             try {
               const parsed = JSON.parse(await $.fs.read(file))
               for (const j of Array.isArray(parsed.jobs) ? parsed.jobs : []) {
+                const updatedAt = j.updatedAt ?? j.completedAt ?? null
+                let status = String(j.status ?? 'unknown')
+                const seen = Date.parse(updatedAt ?? j.startedAt ?? '')
+                if ((status === 'queued' || status === 'running') && !(Date.now() - seen < STALE_MS)) status = 'stalled'
                 jobs.push({
                   id: String(j.id ?? ''),
                   kind: String(j.kindLabel ?? j.jobClass ?? 'job'),
                   title: String(j.summary ?? j.title ?? 'Codex job').slice(0, 90),
-                  status: String(j.status ?? 'unknown'),
+                  status,
                   phase: typeof j.phase === 'string' ? j.phase : null,
                   startedAt: j.startedAt ?? j.createdAt ?? null,
-                  updatedAt: j.updatedAt ?? j.completedAt ?? null,
+                  updatedAt,
                   workspace: ws.name.replace(/-[0-9a-f]{16}$/, ''),
                 })
               }
@@ -86,17 +92,18 @@ export const register: Register = on => {
       if (running.length > 1) line += ` (+${running.length - 1} more)`
     } else if (last) {
       const mins = minutesSince(last.updatedAt, now)
-      const ago = mins === null ? '' : mins < 90 ? ` ${mins} min ago` : ` ${Math.round(mins / 60)} h ago`
+      const ago = mins === null ? '' : mins < 90 ? ` ${mins} min ago` : mins < 2880 ? ` ${Math.round(mins / 60)} h ago` : ` ${Math.round(mins / 1440)} d ago`
       line = `Codex idle. Last ${last.kind} in ${last.workspace} ${last.status}${ago}`
     } else {
       line = snap.found ? 'Codex idle. No jobs yet' : 'Codex runs on the desktop'
     }
 
     return (
-      <Box borderStyle="round" borderDimColor paddingX={1}>
-        <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line} · </Text>
-        <Link href={PAGE} label="Codex requests" />
-        <Text> </Text>
+      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between">
+        <Box>
+          <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line} · </Text>
+          <Link href={PAGE} label="Codex requests" />
+        </Box>
         <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />
       </Box>
     )
