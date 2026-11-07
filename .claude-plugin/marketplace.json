@@ -1,0 +1,7 @@
+{
+  "name": "codex-infoband-forclaude",
+  "owner": { "name": "Andrew Challis" },
+  "plugins": [
+    { "name": "codex-band", "source": "./plugins/codex-band", "description": "A line above the Claude Code prompt showing what Codex is working on, with a link to the Codex requests page" }
+  ]
+}
