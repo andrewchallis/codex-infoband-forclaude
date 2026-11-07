@@ -59,8 +59,15 @@ export const register: Register = on => {
 
     await scan()
     $.clock.every(15000, () => { void scan() })
+    await $.command.register({ name: 'codex-band', description: 'Show the Codex band again after Hide (args: show | hide)' })
 
     return next(e)
+  })
+
+  on('command.run', { command: 'codex-band' }, async ($, e) => {
+    const hide = e.args.trim() === 'hide'
+    await update($, isHidden, () => hide)
+    return { text: hide ? 'Codex band hidden.' : 'Codex band shown.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -86,7 +93,7 @@ export const register: Register = on => {
     }
 
     return (
-      <Box>
+      <Box borderStyle="round" borderDimColor paddingX={1}>
         <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line} · </Text>
         <Link href={PAGE} label="Codex requests" />
         <Text> </Text>
