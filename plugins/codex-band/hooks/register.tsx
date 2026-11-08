@@ -10,6 +10,7 @@ import type { CodexJob, CodexSnapshot, LoggedRows } from '../types'
 // Each Codex job this session starts is also logged on that page.
 const PAGE = 'https://claude.ai/artifact/Dn5pxYxHT9N3joEr8Tbf5Y'
 const COLLECTION = 'requests'
+const BUTTON_GREY = '#454545'
 const EMPTY: CodexSnapshot = { found: false, jobs: [], checkedAt: 0 }
 const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-3' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
@@ -236,7 +237,8 @@ export const register: Register = on => {
     const isTerminal = e.surface === 'terminal'
     const pageLink = isTerminal
       ? <Link href={PAGE}>[ Requests ]</Link>
-      : <Box backgroundColor="subtle" paddingX={1}><Link href={PAGE} label="Requests" /></Box>
+      // shortcut: the desktop's dark-theme button grey, read off a screenshot; no theme reaches a mod, so a light theme gets the same box.
+      : <Box backgroundColor={BUTTON_GREY} borderStyle="round" borderColor={BUTTON_GREY} paddingX={1}><Link href={PAGE} label="Requests" /></Box>
 
     // The desktop already draws the band in its own panel: a border there only adds height.
     return (
