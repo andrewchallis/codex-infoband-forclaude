@@ -24,6 +24,7 @@ declare module 'claude-code' {
       snapshot: Shaped<CodexSnapshot>
       isHidden: boolean
       isShown: boolean
+      shownAt: number
       isPulseOn: boolean
       logged: Shaped<LoggedRows>
       lastCommand: string
