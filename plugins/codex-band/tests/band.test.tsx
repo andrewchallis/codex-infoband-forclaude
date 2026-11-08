@@ -6,7 +6,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100 },
 } as const
 
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => void) {
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => void, onRun?: (argv: readonly string[]) => void) {
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/a' : undefined }))
   on('fs.list', (_, e) => ({
     value: [{ name: /state$/.test(e.path) ? 'ws-0123456789abcdef' : 'codex-openai-codex', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }],
@@ -14,6 +14,8 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = 
   on('fs.exists', () => ({ value: true }))
   on('fs.read', () => ({ value: JSON.stringify({ jobs }) }))
   on('clock.every', () => ({ value: undefined }))
+  on('process.run', (_, e) => { onRun?.(e.argv); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('ui.toast', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'codex-band' } }))
   on('session.id', () => ({ value: 'me' }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -101,4 +103,23 @@ test("this session's Codex job is logged on the page, its own write approved wit
 
   const asked = await $.tool.check({ tool: 'ArtifactData', input: { action: 'set', url: PAGE, collection: 'requests', doc_id: 'x' } })
   expect(asked.decision).toBe('ask')
+})
+
+test('Stop cancels the running job only on the confirming press; Requests opens the page', async ($, on) => {
+  const job = { id: 'task-9', status: 'running', kindLabel: 'task', updatedAt: new Date().toISOString(), sessionId: 'me', workspaceRoot: '/work/w' }
+  const runs: string[][] = []
+  engine(on, [job], undefined, argv => { runs.push([...argv]) })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'codex-band', args: '' })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  await ui.press({ key: 'stop' })
+  expect(runs.some(a => a.includes('cancel'))).toBe(false)
+  await ui.press({ key: 'stop' })
+  const cancel = runs.find(a => a.includes('cancel'))
+  expect(cancel?.slice(2)).toEqual(['cancel', 'task-9', '--cwd', '/work/w', '--json'])
+
+  await ui.press({ key: 'requests' })
+  expect(runs.some(a => a.includes(PAGE))).toBe(true)
+  await ui.unmount()
 })

@@ -9,6 +9,7 @@ export type CodexJob = {
   updatedAt: string | null
   completedAt: string | null
   workspace: string
+  workspaceRoot: string | null
   sessionId: string | null
 }
 
@@ -26,6 +27,7 @@ declare module 'claude-code' {
       isPulseOn: boolean
       logged: Shaped<LoggedRows>
       lastCommand: string
+      stopArmed: { id: string; at: number }
     }
   }
 }

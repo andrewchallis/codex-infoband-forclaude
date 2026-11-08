@@ -10,14 +10,17 @@ import type { CodexJob, CodexSnapshot, LoggedRows } from '../types'
 // Each Codex job this session starts is also logged on that page.
 const PAGE = 'https://claude.ai/artifact/Dn5pxYxHT9N3joEr8Tbf5Y'
 const COLLECTION = 'requests'
-const BUTTON_GREY = '#454545'
 const EMPTY: CodexSnapshot = { found: false, jobs: [], checkedAt: 0 }
-const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-3' })
+const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-4' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
 const isShown = atom({ plugin: 'codex-band', key: 'isShown' } as const, false)
 const isPulseOn = atom({ plugin: 'codex-band', key: 'isPulseOn' } as const, false)
 const logged = atom({ plugin: 'codex-band', key: 'logged' } as const, {} as LoggedRows, { shape: 'logged-1' })
 const lastCommand = atom({ plugin: 'codex-band', key: 'lastCommand' } as const, '')
+// The job whose Stop was pressed once and waits for the confirming press, with when.
+const stopArmed = atom({ plugin: 'codex-band', key: 'stopArmed' } as const, { id: '', at: 0 })
+const ARM_MS = 10000
+let rescan: () => Promise<void> = async () => {}
 
 // A job the Codex plugin never closed (its process died) stays 'running' forever.
 const STALE_MS = 2 * 60 * 60 * 1000
@@ -44,6 +47,49 @@ function isCodexCall(e: object) {
 function isOwnPageWrite(input: unknown) {
   const i = (input ?? {}) as Record<string, unknown>
   return i.url === PAGE && i.collection === COLLECTION && ['get', 'set', 'update'].includes(String(i.action))
+}
+
+// Opens the page in the person's browser, so Requests can be a real Button beside Stop and Hide.
+async function openPage($: EngineInterface) {
+  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  const argv = isWindows ? ['rundll32', 'url.dll,FileProtocolHandler', PAGE] : ['open', PAGE]
+  try {
+    const r = await $.process.run(argv)
+    if (r.exitCode === 0 || isWindows) return
+    await $.process.run(['xdg-open', PAGE])
+  } catch {
+    $.ui.toast(`Couldn't open the page: ${PAGE}`)
+  }
+}
+
+// The Codex plugin's own cancel: interrupts the Codex turn, ends its process and marks the job cancelled.
+async function stopJob($: EngineInterface, job: CodexJob) {
+  const home = ((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/\\/g, '/')
+  const cache = `${home}/.claude/plugins/cache`
+  let script = ''
+  try {
+    for (const market of (await $.fs.list(cache)).filter(d => d.kind === 'dir' && /codex/i.test(d.name))) {
+      const root = `${cache}/${market.name}/codex`
+      if (!(await $.fs.exists(root))) continue
+      const versions = (await $.fs.list(root)).filter(d => d.kind === 'dir').map(d => d.name).sort()
+      for (const v of versions.reverse()) {
+        const candidate = `${root}/${v}/scripts/codex-companion.mjs`
+        if (await $.fs.exists(candidate)) { script = candidate; break }
+      }
+      if (script) break
+    }
+  } catch { /* no plugin cache: reported below */ }
+  if (!script || !job.workspaceRoot) {
+    $.ui.toast("Couldn't find the Codex plugin to stop this job. Try /codex:cancel in its thread.")
+    return
+  }
+  try {
+    const r = await $.process.run(['node', script, 'cancel', job.id, '--cwd', job.workspaceRoot, '--json'], { cwd: job.workspaceRoot })
+    $.ui.toast(r.exitCode === 0 ? `Stopped Codex ${job.kind} in ${job.workspace}.` : `Codex didn't stop: ${(r.stderr || r.stdout).trim().slice(0, 200)}`)
+  } catch (err) {
+    $.ui.toast(`Codex didn't stop: ${String(err).slice(0, 200)}`)
+  }
+  await rescan()
 }
 
 async function setShown($: EngineInterface, on: boolean) {
@@ -148,6 +194,7 @@ export const register: Register = on => {
                   updatedAt,
                   completedAt: j.completedAt ?? null,
                   workspace: ws.name.replace(/-[0-9a-f]{16}$/, ''),
+                  workspaceRoot: typeof j.workspaceRoot === 'string' ? j.workspaceRoot : null,
                   sessionId: typeof j.sessionId === 'string' ? j.sessionId : null,
                 })
               }
@@ -158,7 +205,10 @@ export const register: Register = on => {
       jobs.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
       await update($, snapshot, () => ({ found, jobs: jobs.slice(0, 20), checkedAt: Date.now() }))
       void sync(jobs)
+      const armed = await read($, stopArmed)
+      if (armed.id && Date.now() - armed.at > ARM_MS) await update($, stopArmed, () => ({ id: '', at: 0 }))
     }
+    rescan = scan
 
     await scan()
     $.clock.every(15000, () => { void scan() })
@@ -214,7 +264,8 @@ export const register: Register = on => {
 
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     const now = Date.now()
-    const running = snap.jobs.filter(active)
+    // This session's own running job first: it is the one the line names and Stop stops.
+    const running = snap.jobs.filter(active).sort((a, b) => Number(b.sessionId === me) - Number(a.sessionId === me))
     const last = snap.jobs.find(j => !active(j))
     const isPulsing = running.length > 0 && (await read($, isPulseOn))
 
@@ -232,24 +283,31 @@ export const register: Register = on => {
       line = snap.found ? 'Codex idle. No jobs yet' : 'Codex runs on the desktop'
     }
 
-    // A Button cannot open a URL, so the page link is drawn to pass for one beside Hide:
-    // `[ Requests ]` like the terminal's `[ Hide ]`, a filled box like the desktop's native button.
-    const isTerminal = e.surface === 'terminal'
-    const pageLink = isTerminal
-      ? <Link href={PAGE}>[ Requests ]</Link>
-      // shortcut: the desktop's dark-theme button grey, read off a screenshot; no theme reaches a mod, so a light theme gets the same box.
-      : <Box backgroundColor={BUTTON_GREY} borderStyle="round" borderColor={BUTTON_GREY} paddingX={1}><Link href={PAGE} label="Requests" /></Box>
+    const armed = await read($, stopArmed)
+    const isArmed = Boolean(j) && armed.id === j?.id && now - armed.at < ARM_MS
+    const onStop = async () => {
+      if (!j) return
+      if (!isArmed) return update($, stopArmed, () => ({ id: j.id, at: Date.now() }))
+      await update($, stopArmed, () => ({ id: '', at: 0 }))
+      await stopJob($, j)
+    }
 
-    // The desktop already draws the band in its own panel: a border there only adds height.
+    // Mobile draws on another device than the host, so there the page stays a link.
+    const requests = e.surface === 'mobile'
+      ? <Link href={PAGE} label="Requests" />
+      : <Button key="requests" label="Requests" onPress={() => openPage($)} />
+    const isTerminal = e.surface === 'terminal'
+
     return (
-      <Box borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0} justifyContent="space-between" alignItems="center">
+      <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
+        <Box justifyContent="flex-end" gap={1}>
+          {requests}
+          {j ? <Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} onPress={onStop} /> : null}
+          <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+        </Box>
         <Box>
           <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
           <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line}</Text>
-        </Box>
-        <Box gap={1} alignItems="center">
-          {pageLink}
-          <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
         </Box>
       </Box>
     )
