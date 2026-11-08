@@ -35,6 +35,8 @@ const logged = atom({ plugin: 'codex-band', key: 'logged' } as const, {} as Logg
 const lastCommand = atom({ plugin: 'codex-band', key: 'lastCommand' } as const, '')
 // Set once Codex comes up in the session, so the worker-limits note reaches the model before it writes a brief.
 const isCodexTopic = atom({ plugin: 'codex-band', key: 'isCodexTopic' } as const, false)
+// The Claude task's name for the page: its session title, else the start of its first prompt.
+const taskTitle = atom({ plugin: 'codex-band', key: 'taskTitle' } as const, '')
 // The job whose Stop was pressed once and waits for the confirming press, with when.
 const stopArmed = atom({ plugin: 'codex-band', key: 'stopArmed' } as const, { id: '', at: 0 })
 const ARM_MS = 10000
@@ -240,7 +242,7 @@ function minutesSince(iso: string | null, now: number) {
 // The page's own status words: queued, running, finished, failed, cancelled.
 const pageStatus = (s: string) => (s === 'completed' ? 'finished' : s)
 
-function pageRow(job: CodexJob, command: string) {
+function pageRow(job: CodexJob, command: string, task: string) {
   const row: Record<string, unknown> = {
     kind: job.kind,
     title: `${job.kind} in ${job.workspace}`,
@@ -249,6 +251,8 @@ function pageRow(job: CodexJob, command: string) {
     thread: job.workspace,
   }
   if (command) row.brief = command
+  if (job.sessionId) row.claudeSession = job.sessionId
+  if (task) row.claudeTask = task
   if (job.threadId) Object.assign(row, { threadId: job.threadId, codexUrl: `codex://threads/${job.threadId}` })
   if (job.completedAt) row.finishedAt = job.completedAt
   if (job.status === 'completed' && job.summary) row.summary = job.summary
@@ -259,9 +263,9 @@ type Call = { deny?: string; isError?: boolean; text?: string }
 const versionOf = (r: Call) => Number(/version\D{0,3}(\d+)/i.exec(r.text ?? '')?.[1] ?? NaN)
 const failed = (r: Call) => Boolean(r.deny || r.isError)
 
-async function logJob($: EngineInterface, url: string, job: CodexJob, command: string, known: LoggedRows[string] | undefined) {
+async function logJob($: EngineInterface, url: string, job: CodexJob, command: string, task: string, known: LoggedRows[string] | undefined) {
   const base = { tool: 'ArtifactData', url, collection: COLLECTION, doc_id: job.id }
-  const data = pageRow(job, known ? '' : command)
+  const data = pageRow(job, known ? '' : command, task)
   let r: Call = known
     ? await $.tool.call({ ...base, action: 'update', data, if_version: known.version })
     : await $.tool.call({ ...base, action: 'set', data })
@@ -294,10 +298,11 @@ export const register: Register = on => {
         if (!url) return
         const rows = await read($, logged)
         const command = await read($, lastCommand)
+        const task = await read($, taskTitle)
         for (const job of own) {
           const known = rows[job.id]
           if (known?.status === job.status) continue
-          const version = await logJob($, url, job, command, known)
+          const version = await logJob($, url, job, command, task, known)
           if (version !== null) await update($, logged, all => ({ ...all, [job.id]: { status: job.status, version } }))
         }
       } catch { /* the page is out of reach (offline, signed out): next scan */ } finally {
@@ -370,6 +375,14 @@ export const register: Register = on => {
   })
 
   // Shown before the call runs, so it is up while a Codex hand-off waits for permission.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const title = (e.session_title ?? '').trim()
+    const first = (e.prompt ?? '').trim().split(/\r?\n/)[0]?.slice(0, 80) ?? ''
+    if (title) await update($, taskTitle, () => title)
+    else if (first) await update($, taskTitle, t => t || first)
+    return next(e)
+  })
+
   on('prompt.submit', async ($, e, next) => {
     if (/codex/i.test(field(e, 'text'))) await update($, isCodexTopic, () => true)
     return next(e)

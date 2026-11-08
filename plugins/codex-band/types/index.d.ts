@@ -31,6 +31,7 @@ declare module 'claude-code' {
       logged: Shaped<LoggedRows>
       lastCommand: string
       isCodexTopic: boolean
+      taskTitle: string
       stopArmed: { id: string; at: number }
     }
   }

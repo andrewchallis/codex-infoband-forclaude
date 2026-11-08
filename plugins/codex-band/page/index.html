@@ -45,13 +45,18 @@ h1 { font-size: 22px; font-weight: 600; margin: 0; text-wrap: balance; }
 .chip.run { background: var(--run-bg); color: var(--run); }
 .chip.ok { background: var(--ok-bg); color: var(--ok); }
 .chip.bad { background: var(--bad-bg); color: var(--bad); }
-.list { display: grid; gap: 10px; }
+.list { display: grid; gap: 18px; }
+.group { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.group > h2 { font-size: 15px; font-weight: 600; margin: 0; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+.group > h2 .count { color: var(--muted); font-weight: 400; font-size: 13px; }
 .views { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; justify-self: start; }
 .views button { font: 500 13px var(--sans); color: var(--muted); background: var(--panel); border: 0; padding: 6px 12px; cursor: pointer; font-variant-numeric: tabular-nums; }
 .views button + button { border-left: 1px solid var(--line); }
 .views button[aria-pressed="true"] { background: var(--idle-bg); color: var(--fg); }
 .views button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 details.req { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.group details.req { background: none; border: 0; border-radius: 0; }
+.group details.req + details.req { border-top: 1px solid var(--line); }
 details.req > summary { list-style: none; cursor: pointer; padding: 12px 14px; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: baseline; }
 details.req > summary::-webkit-details-marker { display: none; }
 details.req > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
@@ -180,7 +185,24 @@ function render(all) {
     $('list').innerHTML = `<div class="empty">${!all.length ? 'No Codex requests yet. A row appears here when a thread sends a review or task to Codex.' : view === 'archived' ? `Nothing archived yet. Requests move here ${settings.archiveDays} days after they were sent, once Codex is done and every finding is handled.` : 'No active requests. Older ones are under Archived.'}</div>`;
     return;
   }
-  $('list').innerHTML = rows.map((r, i) => {
+  // Group by the Claude task that raised each request; rows from before tasks were recorded fall back to their thread.
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.claudeSession || `thread:${r.thread || 'unknown'}`;
+    if (!groups.has(key)) groups.set(key, { title: r.claudeTask || r.thread || 'Earlier requests', rows: [] });
+    const g = groups.get(key);
+    if (r.claudeTask && g.title !== r.claudeTask && !g.rows.some(x => x.claudeTask)) g.title = r.claudeTask;
+    g.rows.push(r);
+  }
+  let first = true;
+  $('list').innerHTML = [...groups.values()].map(g => {
+    const live = g.rows.filter(r => r.status === 'queued' || r.status === 'running').length;
+    return `<section class="group"><h2>${esc(g.title)}<span class="count">${g.rows.length} request${g.rows.length > 1 ? 's' : ''}${live ? `, ${live} with Codex now` : ''}</span></h2>${g.rows.map(r => { const i = first ? 0 : 1; first = false; return card(r, i); }).join('')}</section>`;
+  }).join('');
+}
+
+function card(r, i) {
+  {
     const [st, stc] = STATUS[r.status] || [esc(r.status || 'Unknown'), ''];
     const findings = r.findings || [];
     const pend = findings.filter(f => (f.state || 'pending') === 'pending').length;
@@ -203,7 +225,7 @@ function render(all) {
         ${links ? `<div class="links">${links}</div>` : ''}
         ${r.codexUrl ? '<p class="hint">Codex chats started by Claude Code before the Codex plugin listed them may not appear in the Codex app\'s sidebar; the link opens the chat directly.</p>' : ''}
       </div></details>`;
-  }).join('');
+  }
 }
 
 (async () => {

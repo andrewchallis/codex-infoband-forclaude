@@ -181,6 +181,18 @@ test("a logged job links its Codex chat", async ($, on) => {
   expect(calls.find(c => c.tool === 'ArtifactData' && c.action === 'set')).toMatchObject({ data: { threadId: 'thr-1', codexUrl: 'codex://threads/thr-1' } })
 })
 
+for (const [title, expected] of [['Jupiter perf', 'Jupiter perf'], ['', 'Measure the Saturn stop']] as const) {
+  test(`a logged job records the Claude task that raised it: ${title ? 'its title' : 'no title, so its first prompt'}`, async ($, on) => {
+    const calls: Record<string, unknown>[] = []
+    engine(on, [runningJob()], e => { calls.push(e) }, undefined, { pageUrl: MINE })
+    on('classic.UserPromptSubmit', () => ({}))
+    await $.classic.UserPromptSubmit({ prompt: 'Measure the Saturn stop\nwith the GPU', ...(title ? { session_title: title } : {}) })
+    await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+    await (await $.ui.mount({ ...BAND, surface: 'desktop' })).unmount()
+    expect(calls.find(c => c.tool === 'ArtifactData' && c.action === 'set')).toMatchObject({ data: { claudeSession: 'me', claudeTask: expected } })
+  })
+}
+
 test('the worker-limits note reaches the model once Codex comes up, not before', async ($, on) => {
   engine(on)
   on('prompt.submit', (_, e) => ({ text: e.text }))
