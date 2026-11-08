@@ -173,6 +173,27 @@ test("while the band is up, what the mods beneath draw stays, under it", async (
   await ui.unmount()
 })
 
+test("a logged job links its Codex chat", async ($, on) => {
+  const calls: Record<string, unknown>[] = []
+  engine(on, [{ ...runningJob(), threadId: 'thr-1' }], e => { calls.push(e) }, undefined, { pageUrl: MINE })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await (await $.ui.mount({ ...BAND, surface: 'desktop' })).unmount()
+  expect(calls.find(c => c.tool === 'ArtifactData' && c.action === 'set')).toMatchObject({ data: { threadId: 'thr-1', codexUrl: 'codex://threads/thr-1' } })
+})
+
+test('the worker-limits note reaches the model once Codex comes up, not before', async ($, on) => {
+  engine(on)
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('prompt.compose', () => ({ sections: [] }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const input = { model: 'm', promptModel: 'm', surfaces: ['desktop' as const], tools: [], outputStyle: { name: 'default', isKeepingCodingInstructions: true }, traits: [] }
+  const ids = async () => (await $.prompt.compose(input as never)).sections.map(s => s.id)
+  await $.prompt.submit({ text: 'fix the flaky test', wait: false })
+  expect(await ids()).toEqual([])
+  await $.prompt.submit({ text: 'hand the timing work to Codex', wait: false })
+  expect(await ids()).toEqual(['codex-band-worker-limits'])
+})
+
 test('page rows read as jobs: finished is completed, a long-silent running row is stalled', () => {
   const now = Date.parse('2026-11-08T12:00:00Z')
   const text = [

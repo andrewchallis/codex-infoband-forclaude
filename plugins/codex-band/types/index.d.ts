@@ -11,6 +11,7 @@ export type CodexJob = {
   workspace: string
   workspaceRoot: string | null
   sessionId: string | null
+  threadId: string | null
 }
 
 // found: Codex job files exist here; isFromPage: none do, so the jobs are the requests page's rows (a cloud session).
@@ -29,6 +30,7 @@ declare module 'claude-code' {
       isPulseOn: boolean
       logged: Shaped<LoggedRows>
       lastCommand: string
+      isCodexTopic: boolean
       stopArmed: { id: string; at: number }
     }
   }

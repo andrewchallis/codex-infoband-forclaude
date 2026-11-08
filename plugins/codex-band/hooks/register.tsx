@@ -25,7 +25,7 @@ const EMPTY: CodexSnapshot = { found: false, isFromPage: false, jobs: [], checke
 const PAGE_READ_EVERY_MS = 30000
 let lastPageReadAt = 0
 let pageJobs: CodexJob[] = []
-const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-5' })
+const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-6' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
 const isShown = atom({ plugin: 'codex-band', key: 'isShown' } as const, false)
 // When something last brought the band up, so a band shown for a hand-off isn't hidden at once.
@@ -33,12 +33,17 @@ const shownAt = atom({ plugin: 'codex-band', key: 'shownAt' } as const, 0)
 const isPulseOn = atom({ plugin: 'codex-band', key: 'isPulseOn' } as const, false)
 const logged = atom({ plugin: 'codex-band', key: 'logged' } as const, {} as LoggedRows, { shape: 'logged-1' })
 const lastCommand = atom({ plugin: 'codex-band', key: 'lastCommand' } as const, '')
+// Set once Codex comes up in the session, so the worker-limits note reaches the model before it writes a brief.
+const isCodexTopic = atom({ plugin: 'codex-band', key: 'isCodexTopic' } as const, false)
 // The job whose Stop was pressed once and waits for the confirming press, with when.
 const stopArmed = atom({ plugin: 'codex-band', key: 'stopArmed' } as const, { id: '', at: 0 })
 const ARM_MS = 10000
 let rescan: () => Promise<void> = async () => {}
 // One find-or-create attempt per session, so a declined prompt is not asked again every scan.
 let hasTriedPage = false
+
+// What a Codex plugin worker can and can't do, so the briefs Claude writes are ones it can finish.
+export const WORKER_LIMITS = 'Codex workers started through the Codex plugin (/codex:rescue, task, review) run with approval policy "never" and a read-only sandbox (workspace-write only with --write). They have no thread-messaging tools, so they cannot contact other chats or a coordinator, and they cannot do anything that needs an approval, such as posting to GitHub or publishing a report. Brief them with work they can finish with local files and commands, ask for the result in their final message, and do any messaging, posting or publishing yourself. Follow up on Codex work with `task --resume` (it continues the latest Codex task chat for this repository) rather than starting a new chat.'
 
 // A job the Codex plugin never closed (its process died) stays 'running' forever.
 const STALE_MS = 2 * 60 * 60 * 1000
@@ -171,7 +176,7 @@ export function jobsFromPage(text: string, now: number): CodexJob[] {
       jobs.push({
         id, kind: str('kind') ?? 'job', summary: str('summary'), status, phase: null,
         createdAt: sentAt, startedAt: sentAt, updatedAt, completedAt: str('finishedAt'),
-        workspace: str('thread') ?? str('title') ?? 'Codex', workspaceRoot: null, sessionId: null,
+        workspace: str('thread') ?? str('title') ?? 'Codex', workspaceRoot: null, sessionId: null, threadId: str('threadId'),
       })
     } catch { /* not a record line */ }
   }
@@ -244,6 +249,7 @@ function pageRow(job: CodexJob, command: string) {
     thread: job.workspace,
   }
   if (command) row.brief = command
+  if (job.threadId) Object.assign(row, { threadId: job.threadId, codexUrl: `codex://threads/${job.threadId}` })
   if (job.completedAt) row.finishedAt = job.completedAt
   if (job.status === 'completed' && job.summary) row.summary = job.summary
   return row
@@ -331,6 +337,7 @@ export const register: Register = on => {
                   workspace: ws.name.replace(/-[0-9a-f]{16}$/, ''),
                   workspaceRoot: typeof j.workspaceRoot === 'string' ? j.workspaceRoot : null,
                   sessionId: typeof j.sessionId === 'string' ? j.sessionId : null,
+                  threadId: typeof j.threadId === 'string' ? j.threadId : null,
                 })
               }
             } catch { /* a state file mid-write: next scan */ }
@@ -363,8 +370,14 @@ export const register: Register = on => {
   })
 
   // Shown before the call runs, so it is up while a Codex hand-off waits for permission.
+  on('prompt.submit', async ($, e, next) => {
+    if (/codex/i.test(field(e, 'text'))) await update($, isCodexTopic, () => true)
+    return next(e)
+  })
+
   on('tool.call', async ($, e, next) => {
     if (isCodexCall(e)) {
+      await update($, isCodexTopic, () => true)
       await setShown($, true)
       const command = field(e, 'command') || field(e, 'skill') || field(e, 'prompt') || field(e, 'subagent_type')
       await update($, lastCommand, () => command.slice(0, 2000))
@@ -382,7 +395,10 @@ export const register: Register = on => {
       await setShown($, !hide)
       return { text: hide ? 'Codex band hidden.' : 'Codex band shown.' }
     }
-    if (CODEX_NAME.test(e.command)) await setShown($, true)
+    if (CODEX_NAME.test(e.command)) {
+      await update($, isCodexTopic, () => true)
+      await setShown($, true)
+    }
     return next(e)
   })
 
@@ -391,10 +407,12 @@ export const register: Register = on => {
     const composed = await next(e)
     const me = await $.session.id()
     const mine = (await read($, snapshot)).jobs.filter(j => j.sessionId === me)
+    const sections = [...composed.sections]
+    if (mine.length || (await read($, isCodexTopic))) sections.push({ id: 'codex-band-worker-limits', text: WORKER_LIMITS, scope: 'session' as const })
     const url = await storedPage($)
-    if (!mine.length || !url) return composed
+    if (!mine.length || !url) return { ...composed, sections }
     const text = `Codex requests page (${url}): codex-band logs each Codex job of this session in its "${COLLECTION}" collection, doc id = the Codex job id (${mine.map(j => j.id).slice(0, 5).join(', ')}). When you act on a job's findings, add them to that row with ArtifactData update: findings [{ priority, title, state: pending|fixed|rejected|later, action }], and pr, commit or summary where known. Never create a second row for the same job.`
-    return { ...composed, sections: [...composed.sections, { id: 'codex-band-requests', text, scope: 'session' as const }] }
+    return { ...composed, sections: [...sections, { id: 'codex-band-requests', text, scope: 'session' as const }] }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
