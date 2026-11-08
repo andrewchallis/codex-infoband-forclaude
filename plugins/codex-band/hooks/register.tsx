@@ -231,13 +231,16 @@ export const register: Register = on => {
       line = snap.found ? 'Codex idle. No jobs yet' : 'Codex runs on the desktop'
     }
 
-    // A Button cannot open a URL, so the page link is drawn to sit beside Hide as a button.
-    const pageLink = e.surface === 'terminal'
-      ? <Link href={PAGE}>[ Codex requests ]</Link>
-      : <Box borderStyle="round" paddingX={1}><Link href={PAGE} label="Codex requests" /></Box>
+    // A Button cannot open a URL, so the page link is drawn to pass for one beside Hide:
+    // `[ Requests ]` like the terminal's `[ Hide ]`, a filled box like the desktop's native button.
+    const isTerminal = e.surface === 'terminal'
+    const pageLink = isTerminal
+      ? <Link href={PAGE}>[ Requests ]</Link>
+      : <Box backgroundColor="subtle" paddingX={1}><Link href={PAGE} label="Requests" /></Box>
 
+    // The desktop already draws the band in its own panel: a border there only adds height.
     return (
-      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between" alignItems="center">
+      <Box borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0} justifyContent="space-between" alignItems="center">
         <Box>
           <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
           <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line}</Text>
