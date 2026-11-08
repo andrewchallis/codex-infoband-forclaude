@@ -448,7 +448,10 @@ export const register: Register = on => {
     const isTerminal = e.surface === 'terminal'
 
     const pad = isTerminal ? 0 : 1
+    // The band holds one tree: stack whatever the mods beneath draw under ours, so they don't vanish.
+    const below = await next(e)
     return (
+      <Box flexDirection="column">
       <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
         <Box justifyContent="space-between" alignItems="center">
           <Box paddingLeft={pad}>
@@ -464,6 +467,8 @@ export const register: Register = on => {
         </Box>
         {/* Indented past the light so the detail lines up under the head. */}
         {detail ? <Box paddingLeft={pad + 2}><Text dimColor>{detail}</Text></Box> : null}
+      </Box>
+      {below}
       </Box>
     )
   })

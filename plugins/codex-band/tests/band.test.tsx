@@ -163,6 +163,16 @@ test('auto-hide never hides while a job runs', async ($, on) => {
   await ui.unmount()
 })
 
+test("while the band is up, what the mods beneath draw stays, under it", async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'codex-band', args: '' })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await banded(ui)).toBe(true)
+  expect(((await ui.find({ type: 'Text', text: /engine/ })) as { text?: string } | null)?.text).toBe('engine')
+  await ui.unmount()
+})
+
 test('page rows read as jobs: finished is completed, a long-silent running row is stalled', () => {
   const now = Date.parse('2026-11-08T12:00:00Z')
   const text = [
