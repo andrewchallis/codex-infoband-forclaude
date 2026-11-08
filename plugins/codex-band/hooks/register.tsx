@@ -269,18 +269,23 @@ export const register: Register = on => {
     const last = snap.jobs.find(j => !active(j))
     const isPulsing = running.length > 0 && (await read($, isPulseOn))
 
-    let line: string
+    // The head sits on the button row; the detail goes on the line below it.
+    let head: string
+    let detail = ''
     const j = running[0]
     if (j) {
       const mins = minutesSince(j.startedAt, now)
-      line = `Codex ${j.kind} running in ${j.workspace}${j.phase ? `: ${j.phase}` : ''}${mins !== null ? `, ${mins} min` : ''}`
-      if (running.length > 1) line += ` (+${running.length - 1} more)`
+      head = `Codex ${j.kind} running`
+      detail = `in ${j.workspace}${j.phase ? `: ${j.phase}` : ''}${mins !== null ? `, ${mins} min` : ''}`
+      if (running.length > 1) detail += ` (+${running.length - 1} more)`
     } else if (last) {
       const mins = minutesSince(last.updatedAt, now)
       const ago = mins === null ? '' : mins < 90 ? ` ${mins} min ago` : mins < 2880 ? ` ${Math.round(mins / 60)} h ago` : ` ${Math.round(mins / 1440)} d ago`
-      line = `Codex idle. Last ${last.kind} in ${last.workspace} ${last.status}${ago}`
+      head = 'Codex idle'
+      detail = `Last ${last.kind} in ${last.workspace} ${last.status}${ago}`
     } else {
-      line = snap.found ? 'Codex idle. No jobs yet' : 'Codex runs on the desktop'
+      head = snap.found ? 'Codex idle' : 'Codex runs on the desktop'
+      detail = snap.found ? 'No jobs yet' : ''
     }
 
     const armed = await read($, stopArmed)
@@ -298,18 +303,23 @@ export const register: Register = on => {
       : <Button key="requests" label="Requests" onPress={() => openPage($)} />
     const isTerminal = e.surface === 'terminal'
 
+    const pad = isTerminal ? 0 : 1
     return (
-      <Box flexDirection="column" rowGap={isTerminal ? 0 : 1} borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
-        <Box justifyContent="flex-end" gap={1}>
-          {requests}
-          {/* No Button can be disabled: idle, Stop is drawn dim and its press only says so. */}
-          <Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j} onPress={onStop} />
-          <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+      <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
+        <Box justifyContent="space-between" alignItems="center">
+          <Box paddingLeft={pad}>
+            <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
+            <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{head}</Text>
+          </Box>
+          <Box gap={1}>
+            {requests}
+            {/* No Button can be disabled: idle, Stop is drawn dim, keeps that look under the pointer, and its press only says so. */}
+            <Box key="stop-area"><Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j} hover={j ? undefined : { dimColor: true }} onPress={onStop} /></Box>
+            <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+          </Box>
         </Box>
-        <Box paddingLeft={isTerminal ? 0 : 1}>
-          <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
-          <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line}</Text>
-        </Box>
+        {/* Indented past the light so the detail lines up under the head. */}
+        {detail ? <Box paddingLeft={pad + 2}><Text dimColor>{detail}</Text></Box> : null}
       </Box>
     )
   })
