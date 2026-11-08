@@ -205,7 +205,7 @@ test('cloud session (no Codex job files): the band shows the page rows once a de
   await ui.unmount()
 })
 
-test('Stop cancels the running job only on the confirming press; Requests opens the page', async ($, on) => {
+test('Stop cancels the running job only on the confirming press; Details opens the page', async ($, on) => {
   const job = { id: 'task-9', status: 'running', kindLabel: 'task', updatedAt: new Date().toISOString(), sessionId: 'me', workspaceRoot: '/work/w' }
   const runs: string[][] = []
   engine(on, [job], undefined, argv => { runs.push([...argv]) }, { pageUrl: MINE })
@@ -219,7 +219,7 @@ test('Stop cancels the running job only on the confirming press; Requests opens 
   const cancel = runs.find(a => a.includes('cancel'))
   expect(cancel?.slice(2)).toEqual(['cancel', 'task-9', '--cwd', '/work/w', '--json'])
 
-  await ui.press({ key: 'requests' })
+  await ui.press({ key: 'details' })
   expect(runs.some(a => a.includes(MINE))).toBe(true)
   await ui.unmount()
 })

@@ -443,8 +443,8 @@ export const register: Register = on => {
     // Mobile draws on another device than the host, so there the page stays a link.
     const url = await storedPage($)
     const requests = e.surface === 'mobile'
-      ? (url ? <Link href={url} label="Requests" /> : null)
-      : <Button key="requests" label="Requests" onPress={() => openPage($)} />
+      ? (url ? <Link href={url} label="Details" /> : null)
+      : <Button key="details" plain label="Details" onPress={() => openPage($)} />
     const isTerminal = e.surface === 'terminal'
 
     const pad = isTerminal ? 0 : 1
@@ -453,16 +453,16 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
       <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
-        <Box justifyContent="space-between" alignItems="center">
+        <Box justifyContent="space-between" alignItems="center" width={e.props.bodyColumns}>
           <Box paddingLeft={pad}>
             <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
             <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{head}</Text>
           </Box>
-          <Box gap={1}>
+          <Box gap={2}>
             {requests}
             {/* No Button can be disabled: idle, Stop is drawn dim, keeps that look under the pointer, and its press only says so. */}
-            <Box key="stop-area"><Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j || snap.isFromPage} hover={j && !snap.isFromPage ? undefined : { dimColor: true }} onPress={onStop} /></Box>
-            <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+            <Box key="stop-area"><Button key="stop" plain label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j || snap.isFromPage} hover={j && !snap.isFromPage ? undefined : { dimColor: true }} onPress={onStop} /></Box>
+            <Button key="hide" plain label="Hide" onPress={() => setShown($, false)} />
           </Box>
         </Box>
         {/* Indented past the light so the detail lines up under the head. */}
