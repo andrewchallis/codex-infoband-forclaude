@@ -2,7 +2,7 @@
 
 A Claude Code mod, `codex-band`, that adds one line above the prompt showing what Codex is doing: the running review or task (kind, worktree, phase, minutes), or when the last one finished. It also links to the shared [Codex requests](https://claude.ai/artifact/Dn5pxYxHT9N3joEr8Tbf5Y) page, where each request, its findings and what was done about them are listed.
 
-It reads the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc)'s own job records under `~/.claude/plugins/data/<codex plugin>/state/*/state.json` every 15 seconds. So live status only shows on the computer where the Codex plugin runs. Elsewhere, such as a cloud session, the line shows just the link. `Hide` hides it for the session; `/codex-band` shows it again (`/codex-band hide` hides it).
+It reads the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc)'s own job records under `~/.claude/plugins/data/<codex plugin>/state/*/state.json` every 15 seconds. So live status only shows on the computer where the Codex plugin runs. Elsewhere, such as a cloud session, the line shows just the link. It stays hidden in a new chat until the session involves Codex: a Codex hand-off (the companion script, a Codex skill or the Codex subagent, shown while it waits for permission), a `/codex:*` command, or a Codex job this session started. `Hide` hides it until Codex comes up again; `/codex-band` shows it, `/codex-band hide` hides it.
 
 ## Install
 
