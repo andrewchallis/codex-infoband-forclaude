@@ -286,7 +286,7 @@ export const register: Register = on => {
     const armed = await read($, stopArmed)
     const isArmed = Boolean(j) && armed.id === j?.id && now - armed.at < ARM_MS
     const onStop = async () => {
-      if (!j) return
+      if (!j) return $.ui.toast('No Codex job is running.')
       if (!isArmed) return update($, stopArmed, () => ({ id: j.id, at: Date.now() }))
       await update($, stopArmed, () => ({ id: '', at: 0 }))
       await stopJob($, j)
@@ -299,13 +299,14 @@ export const register: Register = on => {
     const isTerminal = e.surface === 'terminal'
 
     return (
-      <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
+      <Box flexDirection="column" rowGap={isTerminal ? 0 : 1} borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
         <Box justifyContent="flex-end" gap={1}>
           {requests}
-          {j ? <Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} onPress={onStop} /> : null}
+          {/* No Button can be disabled: idle, Stop is drawn dim and its press only says so. */}
+          <Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j} onPress={onStop} />
           <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
         </Box>
-        <Box>
+        <Box paddingLeft={isTerminal ? 0 : 1}>
           <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
           <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line}</Text>
         </Box>
