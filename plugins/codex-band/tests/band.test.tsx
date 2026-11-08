@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { isOwnPageCall } from '../hooks/register'
+import { isOwnPageCall, jobsFromPage } from '../hooks/register'
 
 const BAND = {
   plugin: 'codex-band',
@@ -7,12 +7,12 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100 },
 } as const
 
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => { text?: string } | void, onRun?: (argv: readonly string[]) => void, store: Record<string, unknown> = {}) {
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => { text?: string } | void, onRun?: (argv: readonly string[]) => void, store: Record<string, unknown> = {}, hasJobFiles = true) {
   on('store.get', (_, e) => ({ value: store[e.key] }))
   on('store.set', (_, e) => { store[e.key] = e.value; return { value: undefined } })
   on('store.delete', (_, e) => { delete store[e.key]; return { value: undefined } })
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/a' : undefined }))
-  on('fs.list', (_, e) => ({
+  on('fs.list', (_, e) => (!hasJobFiles ? { value: [] } : {
     value: [{ name: /state$/.test(e.path) ? 'ws-0123456789abcdef' : 'codex-openai-codex', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }],
   }))
   on('fs.exists', () => ({ value: true }))
@@ -160,6 +160,38 @@ test('auto-hide never hides while a job runs', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await banded(ui)).toBe(true)
+  await ui.unmount()
+})
+
+test('page rows read as jobs: finished is completed, a long-silent running row is stalled', () => {
+  const now = Date.parse('2026-11-08T12:00:00Z')
+  const text = [
+    '=== BEGIN ARTIFACT DB x ===',
+    JSON.stringify({ id: 'a', data: { kind: 'review', status: 'finished', sentAt: '2026-11-08T11:00:00Z', finishedAt: '2026-11-08T11:10:00Z', thread: 'repo-one' } }),
+    JSON.stringify({ id: 'b', data: { kind: 'task', status: 'running', sentAt: '2026-11-08T11:50:00Z' } }),
+    JSON.stringify({ id: 'c', data: { kind: 'task', status: 'running', sentAt: '2026-11-07T11:50:00Z' } }),
+    '=== END ARTIFACT DB x ===',
+  ].join('\n')
+  const jobs = jobsFromPage(text, now)
+  expect(jobs.map(j => `${j.id} ${j.status}`)).toEqual(['a completed', 'b running', 'c stalled'])
+  expect(jobs[0]).toMatchObject({ workspace: 'repo-one', updatedAt: '2026-11-08T11:10:00Z' })
+})
+
+test('cloud session (no Codex job files): the band shows the page rows once a desktop hand-off is sent, and Stop points to the desktop', async ($, on) => {
+  const runs: string[][] = []
+  const row = JSON.stringify({ id: 'r1', data: { kind: 'review', status: 'running', sentAt: new Date().toISOString(), thread: 'repo-one' } })
+  engine(on, [], e => (e.tool === 'ArtifactData' && e.action === 'list' ? { text: `1 document\n${row}\n` } : undefined), argv => { runs.push([...argv]) }, { pageUrl: MINE }, false)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  let ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await banded(ui)).toBe(false)
+  await ui.unmount()
+
+  await $.tool.call({ tool: 'SendMessage', to: 'desktop', message: 'Please run /codex:rescue --background the brief' })
+  ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /running/ }) as { text?: string } | null)?.text).toBe('Codex review running')
+  await ui.press({ key: 'stop' })
+  await ui.press({ key: 'stop' })
+  expect(runs.some(a => a.includes('cancel'))).toBe(false)
   await ui.unmount()
 })
 

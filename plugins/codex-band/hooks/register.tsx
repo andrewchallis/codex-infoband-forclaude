@@ -20,8 +20,12 @@ const DEFAULT_HIDE_MINUTES = 10
 const SETTINGS_EVERY_MS = 10 * 60 * 1000
 const LOCK_MS = 10 * 60 * 1000
 const COLLECTION = 'requests'
-const EMPTY: CodexSnapshot = { found: false, jobs: [], checkedAt: 0 }
-const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-4' })
+const EMPTY: CodexSnapshot = { found: false, isFromPage: false, jobs: [], checkedAt: 0 }
+// Where no Codex job files exist (a cloud session), the band shows the page's rows instead, read this often.
+const PAGE_READ_EVERY_MS = 30000
+let lastPageReadAt = 0
+let pageJobs: CodexJob[] = []
+const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-5' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
 const isShown = atom({ plugin: 'codex-band', key: 'isShown' } as const, false)
 // When something last brought the band up, so a band shown for a hand-off isn't hidden at once.
@@ -54,6 +58,7 @@ function isCodexCall(e: object) {
   if (tool === 'Bash' || tool === 'PowerShell') return CODEX_SHELL.test(field(e, 'command'))
   if (tool === 'Skill') return CODEX_NAME.test(field(e, 'skill'))
   if (tool === 'Agent') return /codex/i.test(field(e, 'subagent_type'))
+  if (tool === 'SendMessage') return /\/codex:/i.test(field(e, 'message'))
   return false
 }
 
@@ -68,13 +73,13 @@ export function isOwnPageCall(tool: string, input: unknown, url: string | null) 
   const i = (input ?? {}) as Record<string, unknown>
   if (tool === 'Artifact') return i.action === 'list' && !i.url
   if (i.collection === 'settings') return Boolean(url) && i.url === url && i.action === 'get' && i.doc_id === 'page'
-  return Boolean(url) && i.url === url && i.collection === COLLECTION && ['get', 'set', 'update'].includes(String(i.action))
+  return Boolean(url) && i.url === url && i.collection === COLLECTION && ['get', 'list', 'set', 'update'].includes(String(i.action))
 }
 
 const ARTIFACT_URL = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/
 
 // The page's address: remembered, else a page of the person's with this mod's title, else a new one.
-export async function ensurePage($: EngineInterface) {
+export async function ensurePage($: EngineInterface, mayCreate = true) {
   const known = await storedPage($)
   if (known || hasTriedPage) return known
   hasTriedPage = true
@@ -84,7 +89,8 @@ export async function ensurePage($: EngineInterface) {
     const listed: Call = await $.tool.call({ tool: 'Artifact', action: 'list', scope: 'mine', limit: 200 })
     const line = (listed.text ?? '').split('\n').find(l => l.includes(` ${PAGE_TITLE} — `))
     let url = line ? ARTIFACT_URL.exec(line)?.[0] ?? null : null
-    if (!url) {
+    if (!url && !mayCreate) hasTriedPage = false
+    if (!url && mayCreate) {
       await $.store.set(STORE_LOCK, Date.now())
       const made: Call = await $.tool.call({
         tool: 'Artifact', action: 'publish', file_path: `${$.plugin.root}/page/index.html`, title: PAGE_TITLE,
@@ -145,6 +151,43 @@ async function stopJob($: EngineInterface, job: CodexJob) {
     $.ui.toast(`Codex didn't stop: ${String(err).slice(0, 200)}`)
   }
   await rescan()
+}
+
+// The page's status words back to the Codex plugin's: finished is completed.
+const jobStatus = (s: string) => (s === 'finished' ? 'completed' : s)
+
+// The page's rows as jobs, for a machine with no Codex job files: one JSON record per line of the read.
+export function jobsFromPage(text: string, now: number): CodexJob[] {
+  const jobs: CodexJob[] = []
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('{')) continue
+    try {
+      const { id, data } = JSON.parse(line) as { id: string; data: Record<string, unknown> }
+      const str = (k: string) => (typeof data[k] === 'string' ? (data[k] as string) : null)
+      const sentAt = str('sentAt')
+      const updatedAt = str('finishedAt') ?? sentAt
+      let status = jobStatus(str('status') ?? 'unknown')
+      if ((status === 'queued' || status === 'running') && !(now - Date.parse(updatedAt ?? '') < STALE_MS)) status = 'stalled'
+      jobs.push({
+        id, kind: str('kind') ?? 'job', summary: str('summary'), status, phase: null,
+        createdAt: sentAt, startedAt: sentAt, updatedAt, completedAt: str('finishedAt'),
+        workspace: str('thread') ?? str('title') ?? 'Codex', workspaceRoot: null, sessionId: null,
+      })
+    } catch { /* not a record line */ }
+  }
+  return jobs
+}
+
+async function readPageJobs($: EngineInterface) {
+  if (Date.now() - lastPageReadAt < PAGE_READ_EVERY_MS) return pageJobs
+  lastPageReadAt = Date.now()
+  const url = await ensurePage($, false)
+  if (!url) return pageJobs
+  try {
+    const listed: Call = await $.tool.call({ tool: 'ArtifactData', action: 'list', url, collection: COLLECTION, query: { limit: 100 } })
+    if (!failed(listed)) pageJobs = jobsFromPage(listed.text ?? '', Date.now())
+  } catch { /* the page is out of reach: keep the last read */ }
+  return pageJobs
 }
 
 async function setShown($: EngineInterface, on: boolean) {
@@ -294,8 +337,10 @@ export const register: Register = on => {
           }
         }
       } catch { /* no plugin data here (e.g. a cloud session) */ }
+      const isFromPage = !found
+      if (isFromPage) jobs.push(...(await readPageJobs($)))
       jobs.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
-      await update($, snapshot, () => ({ found, jobs: jobs.slice(0, 20), checkedAt: Date.now() }))
+      await update($, snapshot, () => ({ found, isFromPage, jobs: jobs.slice(0, 20), checkedAt: Date.now() }))
       void sync(jobs)
       await autoHide($, jobs, await $.session.id(), Date.now())
       const armed = await read($, stopArmed)
@@ -380,14 +425,16 @@ export const register: Register = on => {
       head = 'Codex idle'
       detail = `Last ${last.kind} in ${last.workspace} ${last.status}${ago}`
     } else {
-      head = snap.found ? 'Codex idle' : 'Codex runs on the desktop'
-      detail = snap.found ? 'No jobs yet' : ''
+      const isKnown = snap.found || snap.isFromPage
+      head = isKnown ? 'Codex idle' : 'Codex runs on the desktop'
+      detail = isKnown ? 'No jobs yet' : ''
     }
 
     const armed = await read($, stopArmed)
     const isArmed = Boolean(j) && armed.id === j?.id && now - armed.at < ARM_MS
     const onStop = async () => {
       if (!j) return $.ui.toast('No Codex job is running.')
+      if (snap.isFromPage) return $.ui.toast(`Codex runs on the desktop: stop this ${j.kind} there.`)
       if (!isArmed) return update($, stopArmed, () => ({ id: j.id, at: Date.now() }))
       await update($, stopArmed, () => ({ id: '', at: 0 }))
       await stopJob($, j)
@@ -411,7 +458,7 @@ export const register: Register = on => {
           <Box gap={1}>
             {requests}
             {/* No Button can be disabled: idle, Stop is drawn dim, keeps that look under the pointer, and its press only says so. */}
-            <Box key="stop-area"><Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j} hover={j ? undefined : { dimColor: true }} onPress={onStop} /></Box>
+            <Box key="stop-area"><Button key="stop" label={isArmed ? 'Confirm stop' : 'Stop'} dimColor={!j || snap.isFromPage} hover={j && !snap.isFromPage ? undefined : { dimColor: true }} onPress={onStop} /></Box>
             <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
           </Box>
         </Box>

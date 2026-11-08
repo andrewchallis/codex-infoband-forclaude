@@ -13,7 +13,8 @@ export type CodexJob = {
   sessionId: string | null
 }
 
-export type CodexSnapshot = { found: boolean; jobs: CodexJob[]; checkedAt: number }
+// found: Codex job files exist here; isFromPage: none do, so the jobs are the requests page's rows (a cloud session).
+export type CodexSnapshot = { found: boolean; isFromPage: boolean; jobs: CodexJob[]; checkedAt: number }
 
 // Codex job id -> the status last written to the requests page and that row's version.
 export type LoggedRows = Record<string, { status: string; version: number }>
