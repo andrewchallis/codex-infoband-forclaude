@@ -1,1 +1,1 @@
-{ "name": "codex-band", "version": "0.10.0", "description": "A line above the prompt showing what Codex is working on and a link to the Codex requests page", "types": "./types/index.d.ts", "license": "MIT" }
+{ "name": "codex-band", "version": "0.10.1", "description": "A line above the prompt showing what Codex is working on and a link to the Codex requests page", "types": "./types/index.d.ts", "license": "MIT" }

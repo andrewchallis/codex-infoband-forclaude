@@ -212,8 +212,7 @@ function card(r, i) {
       <thead><tr><th>Level</th><th>Finding</th><th>What was done</th></tr></thead><tbody>${findings.map(f => {
         const [a, ac] = ACTION[f.state || 'pending'] || [esc(f.state), ''];
         return `<tr><td class="p">${esc(f.priority)}</td><td>${esc(f.title)}</td><td>${chip(a, ac)}${f.action ? `<div>${esc(f.action)}</div>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>` : '';
-    const links = [/^codex:\/\/threads\/[\w-]+$/.test(r.codexUrl || '') && `<a href="${esc(r.codexUrl)}">Open the Codex chat</a>`,
-      r.commentUrl && `<a href="${esc(r.commentUrl)}" target="_blank" rel="noopener">Full Codex output on GitHub</a>`,
+    const links = [r.commentUrl && `<a href="${esc(r.commentUrl)}" target="_blank" rel="noopener">Full Codex output on GitHub</a>`,
       r.pr && (/^https:\/\//.test(r.prUrl || '') ? `<a href="${esc(r.prUrl)}" target="_blank" rel="noopener">PR #${esc(r.pr)}</a>` : `<span>PR #${esc(r.pr)}</span>`)].filter(Boolean).join('');
     return `<details class="req"${i === 0 ? ' open' : ''}><summary>
       <span class="kind">${esc(r.kind || 'review')}</span><span class="ttl">${r.pr ? `#${esc(r.pr)} ` : ''}${esc(r.title || '')}</span><span class="when">${fmt(r.sentAt)}</span>
@@ -223,7 +222,7 @@ function card(r, i) {
         <div><p class="label">Sent to Codex${r.commit ? ` at <code>${esc(String(r.commit).slice(0, 10))}</code>` : ''}</p><pre class="brief">${esc(r.brief || r.command || 'Not recorded')}</pre></div>
         ${table}
         ${links ? `<div class="links">${links}</div>` : ''}
-        ${r.codexUrl ? '<p class="hint">Codex chats started by Claude Code before the Codex plugin listed them may not appear in the Codex app\'s sidebar; the link opens the chat directly.</p>' : ''}
+        ${/^[\w-]+$/.test(r.threadId || '') ? `<div><p class="label">Codex chat</p><div><code>${esc(r.threadId)}</code> · resume in a terminal: <code>codex resume ${esc(r.threadId)}</code></div><p class="hint">This page can't open the Codex app, so copy the ID or the command. A chat Claude Code started while the Codex app was open appears in its sidebar after you restart the app.</p></div>` : ''}
       </div></details>`;
   }
 }
