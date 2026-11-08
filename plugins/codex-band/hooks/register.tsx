@@ -453,7 +453,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
       <Box flexDirection="column" borderStyle={isTerminal ? 'round' : undefined} borderDimColor paddingX={isTerminal ? 1 : 0}>
-        <Box justifyContent="space-between" alignItems="center" width={e.props.bodyColumns}>
+        <Box justifyContent="space-between" alignItems="center">
           <Box paddingLeft={pad}>
             <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
             <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{head}</Text>
