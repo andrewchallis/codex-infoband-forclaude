@@ -1,17 +1,22 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { CodexJob, CodexSnapshot } from '../types'
+import type { CodexJob, CodexSnapshot, LoggedRows } from '../types'
 
 // Shows above the prompt what Codex is doing, read from the Codex plugin's own
 // job records (<home>/.claude/plugins/data/<codex plugin>/state/<workspace>/state.json),
 // plus a link to the shared Codex requests page. Hidden until the session involves
 // Codex: a Codex tool call or command, or a Codex job this session started.
+// Each Codex job this session starts is also logged on that page.
 const PAGE = 'https://claude.ai/artifact/Dn5pxYxHT9N3joEr8Tbf5Y'
+const COLLECTION = 'requests'
 const EMPTY: CodexSnapshot = { found: false, jobs: [], checkedAt: 0 }
-const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-2' })
+const snapshot = atom({ plugin: 'codex-band', key: 'snapshot' } as const, EMPTY, { shape: 'snapshot-3' })
 const isHidden = atom({ plugin: 'codex-band', key: 'isHidden' } as const, false)
 const isShown = atom({ plugin: 'codex-band', key: 'isShown' } as const, false)
+const isPulseOn = atom({ plugin: 'codex-band', key: 'isPulseOn' } as const, false)
+const logged = atom({ plugin: 'codex-band', key: 'logged' } as const, {} as LoggedRows, { shape: 'logged-1' })
+const lastCommand = atom({ plugin: 'codex-band', key: 'lastCommand' } as const, '')
 
 // A job the Codex plugin never closed (its process died) stays 'running' forever.
 const STALE_MS = 2 * 60 * 60 * 1000
@@ -21,16 +26,23 @@ const active = (job: CodexJob) => job.status === 'queued' || job.status === 'run
 const CODEX_SHELL = /codex-companion|\bcodex(\.exe)?\s+(exec|review|resume|apply)\b/i
 const CODEX_NAME = /(^|:)codex(?!-band\b)|astra-review/i
 
+function field(e: object, k: string) {
+  const v = (e as Record<string, unknown>)[k]
+  return typeof v === 'string' ? v : ''
+}
+
 function isCodexCall(e: object) {
-  const field = (k: string) => {
-    const v = (e as Record<string, unknown>)[k]
-    return typeof v === 'string' ? v : ''
-  }
-  const tool = field('tool')
-  if (tool === 'Bash' || tool === 'PowerShell') return CODEX_SHELL.test(field('command'))
-  if (tool === 'Skill') return CODEX_NAME.test(field('skill'))
-  if (tool === 'Agent') return /codex/i.test(field('subagent_type'))
+  const tool = field(e, 'tool')
+  if (tool === 'Bash' || tool === 'PowerShell') return CODEX_SHELL.test(field(e, 'command'))
+  if (tool === 'Skill') return CODEX_NAME.test(field(e, 'skill'))
+  if (tool === 'Agent') return /codex/i.test(field(e, 'subagent_type'))
   return false
+}
+
+// Only this mod's own writes to the requests list are pre-approved.
+function isOwnPageWrite(input: unknown) {
+  const i = (input ?? {}) as Record<string, unknown>
+  return i.url === PAGE && i.collection === COLLECTION && ['get', 'set', 'update'].includes(String(i.action))
 }
 
 async function setShown($: EngineInterface, on: boolean) {
@@ -43,10 +55,67 @@ function minutesSince(iso: string | null, now: number) {
   return Number.isFinite(t) ? Math.max(0, Math.round((now - t) / 60000)) : null
 }
 
+// The page's own status words: queued, running, finished, failed, cancelled.
+const pageStatus = (s: string) => (s === 'completed' ? 'finished' : s)
+
+function pageRow(job: CodexJob, command: string) {
+  const row: Record<string, unknown> = {
+    kind: job.kind,
+    title: `${job.kind} in ${job.workspace}`,
+    status: pageStatus(job.status),
+    sentAt: job.createdAt ?? job.startedAt,
+    thread: job.workspace,
+  }
+  if (command) row.brief = command
+  if (job.completedAt) row.finishedAt = job.completedAt
+  if (job.status === 'completed' && job.summary) row.summary = job.summary
+  return row
+}
+
+type Call = { deny?: string; isError?: boolean; text?: string }
+const versionOf = (r: Call) => Number(/version\D{0,3}(\d+)/i.exec(r.text ?? '')?.[1] ?? NaN)
+const failed = (r: Call) => Boolean(r.deny || r.isError)
+
+async function logJob($: EngineInterface, job: CodexJob, command: string, known: LoggedRows[string] | undefined) {
+  const base = { tool: 'ArtifactData', url: PAGE, collection: COLLECTION, doc_id: job.id }
+  const data = pageRow(job, known ? '' : command)
+  let r: Call = known
+    ? await $.tool.call({ ...base, action: 'update', data, if_version: known.version })
+    : await $.tool.call({ ...base, action: 'set', data })
+  if (failed(r)) {
+    // The row exists (a resumed session) or changed since (a thread added findings): re-read, then merge.
+    const got: Call = await $.tool.call({ ...base, action: 'get' })
+    const v = versionOf(got)
+    if (failed(got) || !Number.isFinite(v)) return null
+    r = await $.tool.call({ ...base, action: 'update', data, if_version: v })
+    if (failed(r)) return null
+  }
+  const v = versionOf(r)
+  return Number.isFinite(v) ? v : (known?.version ?? 1) + 1
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
     const dataRoot = `${home.replace(/\\/g, '/')}/.claude/plugins/data`
+    let isSyncing = false
+
+    const sync = async (jobs: CodexJob[]) => {
+      if (isSyncing) return
+      isSyncing = true
+      try {
+        const me = await $.session.id()
+        const rows = await read($, logged)
+        const command = await read($, lastCommand)
+        for (const job of jobs.filter(j => j.sessionId === me)) {
+          const known = rows[job.id]
+          if (known?.status === job.status) continue
+          const version = await logJob($, job, command, known)
+          if (version !== null) await update($, logged, all => ({ ...all, [job.id]: { status: job.status, version } }))
+        }
+      } catch { /* the page is out of reach (offline, signed out): next scan */ }
+      isSyncing = false
+    }
 
     const scan = async () => {
       const jobs: CodexJob[] = []
@@ -70,11 +139,13 @@ export const register: Register = on => {
                 jobs.push({
                   id: String(j.id ?? ''),
                   kind: String(j.kindLabel ?? j.jobClass ?? 'job'),
-                  title: String(j.summary ?? j.title ?? 'Codex job').slice(0, 90),
+                  summary: typeof j.summary === 'string' ? j.summary.slice(0, 600) : null,
                   status,
                   phase: typeof j.phase === 'string' ? j.phase : null,
+                  createdAt: j.createdAt ?? null,
                   startedAt: j.startedAt ?? j.createdAt ?? null,
                   updatedAt,
+                  completedAt: j.completedAt ?? null,
                   workspace: ws.name.replace(/-[0-9a-f]{16}$/, ''),
                   sessionId: typeof j.sessionId === 'string' ? j.sessionId : null,
                 })
@@ -85,10 +156,16 @@ export const register: Register = on => {
       } catch { /* no plugin data here (e.g. a cloud session) */ }
       jobs.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
       await update($, snapshot, () => ({ found, jobs: jobs.slice(0, 20), checkedAt: Date.now() }))
+      void sync(jobs)
     }
 
     await scan()
     $.clock.every(15000, () => { void scan() })
+    // The activity light: flips only while a job runs, so an idle band never redraws.
+    $.clock.every(800, async () => {
+      const running = (await read($, snapshot)).jobs.some(active)
+      if (running || (await read($, isPulseOn))) await update($, isPulseOn, lit => running && !lit)
+    })
     await $.command.register({ name: 'codex-band', description: 'Show the Codex band (args: show | hide)' })
 
     return next(e)
@@ -96,9 +173,17 @@ export const register: Register = on => {
 
   // Shown before the call runs, so it is up while a Codex hand-off waits for permission.
   on('tool.call', async ($, e, next) => {
-    if (isCodexCall(e)) await setShown($, true)
+    if (isCodexCall(e)) {
+      await setShown($, true)
+      const command = field(e, 'command') || field(e, 'skill') || field(e, 'prompt') || field(e, 'subagent_type')
+      await update($, lastCommand, () => command.slice(0, 2000))
+    }
     return next(e)
   })
+
+  on('tool.check', { tool: 'ArtifactData' }, ($, e, next) =>
+    next.origin.plugin === $.plugin.name && isOwnPageWrite(e.input) ? { decision: 'allow' } : next(e),
+  )
 
   on('command.run', async ($, e, next) => {
     if (e.command === 'codex-band') {
@@ -108,6 +193,16 @@ export const register: Register = on => {
     }
     if (CODEX_NAME.test(e.command)) await setShown($, true)
     return next(e)
+  })
+
+  // Tells the model where its Codex job's row is, so findings go there and not in a second row.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    const me = await $.session.id()
+    const mine = (await read($, snapshot)).jobs.filter(j => j.sessionId === me)
+    if (!mine.length) return composed
+    const text = `Codex requests page (${PAGE}): codex-band logs each Codex job of this session in its "${COLLECTION}" collection, doc id = the Codex job id (${mine.map(j => j.id).slice(0, 5).join(', ')}). When you act on a job's findings, add them to that row with ArtifactData update: findings [{ priority, title, state: pending|fixed|rejected|later, action }], and pr, commit or summary where known. Never create a second row for the same job.`
+    return { ...composed, sections: [...composed.sections, { id: 'codex-band-requests', text, scope: 'session' as const }] }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -120,6 +215,7 @@ export const register: Register = on => {
     const now = Date.now()
     const running = snap.jobs.filter(active)
     const last = snap.jobs.find(j => !active(j))
+    const isPulsing = running.length > 0 && (await read($, isPulseOn))
 
     let line: string
     const j = running[0]
@@ -135,13 +231,21 @@ export const register: Register = on => {
       line = snap.found ? 'Codex idle. No jobs yet' : 'Codex runs on the desktop'
     }
 
+    // A Button cannot open a URL, so the page link is drawn to sit beside Hide as a button.
+    const pageLink = e.surface === 'terminal'
+      ? <Link href={PAGE}>[ Codex requests ]</Link>
+      : <Box borderStyle="round" paddingX={1}><Link href={PAGE} label="Codex requests" /></Box>
+
     return (
-      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between">
+      <Box borderStyle="round" borderDimColor paddingX={1} justifyContent="space-between" alignItems="center">
         <Box>
-          <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line} · </Text>
-          <Link href={PAGE} label="Codex requests" />
+          <Text color={running.length ? (isPulsing ? 'greenBright' : 'green') : 'gray'} dimColor={!running.length || !isPulsing}>● </Text>
+          <Text color={running.length ? 'yellow' : undefined} dimColor={!running.length}>{line}</Text>
         </Box>
-        <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+        <Box gap={1} alignItems="center">
+          {pageLink}
+          <Button key="hide" label="Hide" onPress={() => setShown($, false)} />
+        </Box>
       </Box>
     )
   })
