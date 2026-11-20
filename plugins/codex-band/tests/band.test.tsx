@@ -271,16 +271,16 @@ test('pop-ups: which status changes earn one', () => {
 
 test('pop-up text: short context, the brief, the task and how long it took', () => {
   const now = Date.parse('2026-11-20T18:00:00Z')
-  const job = { id: 'task-1', kind: 'review', summary: 'Found 2 issues:\n- a race in sync', status: 'completed', phase: null, createdAt: '2026-11-20T17:56:00Z', startedAt: '2026-11-20T17:56:00Z', updatedAt: null, completedAt: '2026-11-20T18:00:00Z', workspace: 'universe-lab', workspaceRoot: null, sessionId: 'me', threadId: null }
-  const command = 'node "/p/codex-companion.mjs" task --background --write "Review PR #777 for the Learn card change"'
-  expect(briefTitle(command)).toBe('Review PR #777 for the Learn card change')
-  const started = notifyText('started', { ...job, status: 'running', completedAt: null }, command, 'Coordinate better with Codex', now)
-  expect(started.title).toBe('Codex review · PR #777 started')
-  expect(started.body).toBe('Review PR #777 for the Learn card change\nFrom: Coordinate better with Codex · universe-lab')
-  const done = notifyText('finished', job, command, 'Coordinate better with Codex', now)
-  expect(done.title).toBe('Codex review · PR #777 finished · 4 min')
+  const job = { id: 'task-1', kind: 'review', summary: 'Found 2 issues:\n- a race in sync', status: 'completed', phase: null, createdAt: '2026-11-20T17:56:00Z', startedAt: '2026-11-20T17:56:00Z', updatedAt: null, completedAt: '2026-11-20T18:00:00Z', workspace: 'my-repo', workspaceRoot: null, sessionId: 'me', threadId: null }
+  const command = 'node "/p/codex-companion.mjs" task --background --write "Review PR #42 for the login change"'
+  expect(briefTitle(command)).toBe('Review PR #42 for the login change')
+  const started = notifyText('started', { ...job, status: 'running', completedAt: null }, command, 'Tidy the docs', now)
+  expect(started.title).toBe('Codex review · PR #42 started')
+  expect(started.body).toBe('Review PR #42 for the login change\nFrom: Tidy the docs · my-repo')
+  const done = notifyText('finished', job, command, 'Tidy the docs', now)
+  expect(done.title).toBe('Codex review · PR #42 finished · 4 min')
   expect(done.body.split('\n')[0]).toBe('Found 2 issues: - a race in sync')
-  expect(notifyText('failed', { ...job, summary: null, phase: 'model not available' }, '', '', now).body).toBe('model not available\nFrom: a Claude task · universe-lab')
+  expect(notifyText('failed', { ...job, summary: null, phase: 'model not available' }, '', '', now).body).toBe('model not available\nFrom: a Claude task · my-repo')
 })
 
 test('pop-up command: Windows toast links the row, macOS uses osascript arguments, others none', () => {

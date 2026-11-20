@@ -6,7 +6,7 @@ It reads the Codex plugin's own job records under `~/.claude/plugins/data/<codex
 
 ## Pop-up notifications
 
-The band isn't drawn in a session you can't see, such as a Remote Control session a claude.ai project started on your computer. So when one of the session's own Codex jobs starts, finishes, fails or stalls, the mod also raises a system pop-up, in the same step that writes the job's row to your requests page. The pop-up names the job (`Codex review · PR #777 started`), the brief's first line or the finished job's one-line summary, and the Claude task and workspace it came from. It holds no code and stays short, since it can show on a lock screen.
+The band isn't drawn in a session you can't see, such as a Remote Control session a claude.ai project started on your computer. So when one of the session's own Codex jobs starts, finishes, fails or stalls, the mod also raises a system pop-up, in the same step that writes the job's row to your requests page. The pop-up names the job (`Codex review · PR #42 started`), the brief's first line or the finished job's one-line summary, and the Claude task and workspace it came from. It holds no code and stays short, since it can show on a lock screen.
 
 - Windows: a Windows notification raised through PowerShell. Clicking it, or its Open details button, opens your requests page at that job's row (`<page>#<job id>`), which the page opens, scrolls to and highlights.
 - macOS: a notification through `osascript`, with the same text. It can't open a link when clicked.
