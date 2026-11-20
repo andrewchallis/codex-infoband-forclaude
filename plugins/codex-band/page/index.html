@@ -37,6 +37,12 @@ dialog.settings h2 { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
 .actions button { font: 500 14px var(--sans); border-radius: 6px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
 .actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
 .error { color: var(--bad); font-size: 13px; margin: 8px 0 0; }
+fieldset.notify { border: 0; border-top: 1px solid var(--line); padding: 12px 0 0; margin: 0 0 14px; }
+fieldset.notify legend { font-weight: 600; font-size: 14px; padding: 0 6px 0 0; }
+fieldset.notify .sub { padding-left: 24px; }
+fieldset.notify .sub.off { opacity: .5; }
+details.req > summary { transition: background-color 1.5s; }
+details.req.focus > summary { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 h1 { font-size: 22px; font-weight: 600; margin: 0; text-wrap: balance; }
 .sub { color: var(--muted); margin: 2px 0 0; font-size: 14px; }
 .strip { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -101,6 +107,21 @@ code { font: 13px var(--mono); }
         <input type="number" id="hide-minutes" min="0" max="1440" step="1" required>
         <span class="hint">0 keeps it up. It comes back the next time a session hands work to Codex.</span>
       </label>
+      <fieldset class="notify">
+        <legend>Pop-up notifications</legend>
+        <label class="check"><input type="checkbox" id="notify-on"> Show a pop-up on my computer for Codex jobs</label>
+        <div class="sub" id="notify-kinds">
+          <label class="check"><input type="checkbox" id="notify-started"> When a job starts</label>
+          <label class="check"><input type="checkbox" id="notify-finished"> When it finishes</label>
+          <label class="check"><input type="checkbox" id="notify-failed"> When it fails</label>
+          <label class="check"><input type="checkbox" id="notify-stalled"> When it stops updating (stalled)</label>
+          <label class="field">Remind me if a job runs longer than (minutes)
+            <input type="number" id="notify-long" min="0" max="1440" step="1" required>
+            <span class="hint">0 turns the reminder off.</span>
+          </label>
+        </div>
+        <p class="hint">On Windows, click the pop-up to open that job on this page. On a Mac the pop-up shows the same text but can't open a link. Changes reach new Claude sessions straight away and open ones within 10 minutes.</p>
+      </fieldset>
       <label class="field">Archive requests after (days)
         <input type="number" id="archive-days" min="1" max="365" step="1" required>
         <span class="hint">Counted from when the request was sent, once Codex is done and every finding is handled.</span>
@@ -136,7 +157,7 @@ const chip = (text, cls) => `<span class="chip ${cls}">${text}</span>`;
 // Archived: older than the archive age, not with Codex and no finding left to handle.
 // With deletion on, an archived request's entry is deleted from this page once it has spent the delete age in the archive.
 const DAY = 864e5;
-const DEFAULTS = { archiveDays: 14, deleteOn: false, deleteDays: 14, autoHideMinutes: 10 };
+const DEFAULTS = { archiveDays: 14, deleteOn: false, deleteDays: 14, autoHideMinutes: 10, notifyOn: true, notifyStarted: true, notifyFinished: true, notifyFailed: true, notifyStalled: true, notifyLongMinutes: 0 };
 let settings = { ...DEFAULTS };
 const whole = (v, min, max, fallback) => { const n = Math.round(Number(v)); return v !== '' && v != null && n >= min && n <= max ? n : fallback; };
 const wholeDays = (v, max, fallback) => whole(v, 1, max, fallback);
@@ -145,7 +166,28 @@ const readSettings = d => ({
   deleteOn: d?.deleteOn === true,
   deleteDays: wholeDays(d?.deleteDays, 3650, DEFAULTS.deleteDays),
   autoHideMinutes: whole(d?.autoHideMinutes, 0, 1440, DEFAULTS.autoHideMinutes),
+  // Pop-ups: on unless switched off; the reminder is off (0) unless set.
+  notifyOn: d?.notifyOn !== false,
+  notifyStarted: d?.notifyStarted !== false,
+  notifyFinished: d?.notifyFinished !== false,
+  notifyFailed: d?.notifyFailed !== false,
+  notifyStalled: d?.notifyStalled !== false,
+  notifyLongMinutes: whole(d?.notifyLongMinutes, 0, 1440, DEFAULTS.notifyLongMinutes),
 });
+// A link to one job (the pop-up's click: <page>#<job id>) opens that row, scrolls to it and highlights it.
+const hashId = () => { try { return decodeURIComponent(location.hash.slice(1)); } catch { return ''; } };
+let focusId = hashId();
+window.addEventListener('hashchange', () => { focusId = hashId(); render(lastRows); });
+const focusCard = () => {
+  if (!focusId) return;
+  const el = document.getElementById(`req-${focusId}`);
+  if (!el) return;
+  focusId = '';
+  el.open = true;
+  el.classList.add('focus');
+  el.scrollIntoView({ block: 'center' });
+  setTimeout(() => el.classList.remove('focus'), 4000);
+};
 const sentAt = r => Date.parse(r.sentAt || '');
 const isArchived = r => {
   const open = (r.findings || []).some(f => (f.state || 'pending') === 'pending');
@@ -170,6 +212,8 @@ function render(all) {
     b.setAttribute('aria-pressed', String(b.dataset.view === view));
     b.textContent = `${b.dataset.view[0].toUpperCase()}${b.dataset.view.slice(1)} ${counts[b.dataset.view]}`;
   }
+  // A linked job that the current view hides: show everything so it can be opened.
+  if (focusId && all.some(r => r.id === focusId)) { view = 'all'; }
   const rows = view === 'all' ? all.slice() : all.filter(r => (view === 'archived') === isArchived(r));
   rows.sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')));
   const active = all.filter(r => r.status === 'queued' || r.status === 'running').length;
@@ -199,6 +243,7 @@ function render(all) {
     const live = g.rows.filter(r => r.status === 'queued' || r.status === 'running').length;
     return `<section class="group"><h2>${esc(g.title)}<span class="count">${g.rows.length} request${g.rows.length > 1 ? 's' : ''}${live ? `, ${live} with Codex now` : ''}</span></h2>${g.rows.map(r => { const i = first ? 0 : 1; first = false; return card(r, i); }).join('')}</section>`;
   }).join('');
+  focusCard();
 }
 
 function card(r, i) {
@@ -214,7 +259,7 @@ function card(r, i) {
         return `<tr><td class="p">${esc(f.priority)}</td><td>${esc(f.title)}</td><td>${chip(a, ac)}${f.action ? `<div>${esc(f.action)}</div>` : ''}</td></tr>`; }).join('')}</tbody></table></div></div>` : '';
     const links = [r.commentUrl && `<a href="${esc(r.commentUrl)}" target="_blank" rel="noopener">Full Codex output on GitHub</a>`,
       r.pr && (/^https:\/\//.test(r.prUrl || '') ? `<a href="${esc(r.prUrl)}" target="_blank" rel="noopener">PR #${esc(r.pr)}</a>` : `<span>PR #${esc(r.pr)}</span>`)].filter(Boolean).join('');
-    return `<details class="req"${i === 0 ? ' open' : ''}><summary>
+    return `<details class="req" id="req-${esc(r.id)}"${i === 0 || r.id === focusId ? ' open' : ''}><summary>
       <span class="kind">${esc(r.kind || 'review')}</span><span class="ttl">${r.pr ? `#${esc(r.pr)} ` : ''}${esc(r.title || '')}</span><span class="when">${fmt(r.sentAt)}</span>
       <span class="meta">${chip(st, stc)}${fsum}${r.thread ? `<span>from ${esc(r.thread)}</span>` : ''}</span></summary>
       <div class="body">
@@ -250,20 +295,36 @@ function card(r, i) {
   }, () => { settingsReady = true; });
   const dialog = $('settings');
   const syncDeleteField = () => { $('delete-days').disabled = !$('delete-on').checked; };
+  const NOTIFY_KINDS = [['notify-started', 'notifyStarted'], ['notify-finished', 'notifyFinished'], ['notify-failed', 'notifyFailed'], ['notify-stalled', 'notifyStalled']];
+  const syncNotifyFields = () => {
+    const on = $('notify-on').checked;
+    $('notify-kinds').classList.toggle('off', !on);
+    for (const [id] of NOTIFY_KINDS) $(id).disabled = !on;
+    $('notify-long').disabled = !on;
+  };
   $('cog').addEventListener('click', () => {
     $('hide-minutes').value = settings.autoHideMinutes;
     $('archive-days').value = settings.archiveDays;
     $('delete-on').checked = settings.deleteOn;
     $('delete-days').value = settings.deleteDays;
+    $('notify-on').checked = settings.notifyOn;
+    for (const [id, key] of NOTIFY_KINDS) $(id).checked = settings[key];
+    $('notify-long').value = settings.notifyLongMinutes;
     $('settings-error').hidden = true;
     syncDeleteField();
+    syncNotifyFields();
     dialog.showModal();
   });
   $('delete-on').addEventListener('change', syncDeleteField);
+  $('notify-on').addEventListener('change', syncNotifyFields);
   $('settings-cancel').addEventListener('click', () => dialog.close());
   $('settings-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const next = readSettings({ autoHideMinutes: $('hide-minutes').value, archiveDays: $('archive-days').value, deleteOn: $('delete-on').checked, deleteDays: $('delete-days').value });
+    const next = readSettings({
+      autoHideMinutes: $('hide-minutes').value, archiveDays: $('archive-days').value, deleteOn: $('delete-on').checked, deleteDays: $('delete-days').value,
+      notifyOn: $('notify-on').checked, notifyLongMinutes: $('notify-long').value,
+      ...Object.fromEntries(NOTIFY_KINDS.map(([id, key]) => [key, $(id).checked])),
+    });
     if (JSON.stringify(next) === JSON.stringify(settings)) { dialog.close(); return; }
     try {
       await db.doc('settings/page').set(next);
