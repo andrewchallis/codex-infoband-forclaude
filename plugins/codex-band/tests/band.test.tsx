@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { isOwnPageCall, jobsFromPage } from '../hooks/register'
+import { briefTitle, isOwnPageCall, jobLink, jobsFromPage, notifyCommand, notifyEvent, notifyText, parseNotify } from '../hooks/register'
 
 const BAND = {
   plugin: 'codex-band',
@@ -7,7 +7,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100 },
 } as const
 
-function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => { text?: string } | void, onRun?: (argv: readonly string[]) => void, store: Record<string, unknown> = {}, hasJobFiles = true) {
+function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = [], onTool?: (e: Record<string, unknown>) => { text?: string } | void, onRun?: (argv: readonly string[], init?: { env?: Record<string, string> }) => void, store: Record<string, unknown> = {}, hasJobFiles = true) {
   on('store.get', (_, e) => ({ value: store[e.key] }))
   on('store.set', (_, e) => { store[e.key] = e.value; return { value: undefined } })
   on('store.delete', (_, e) => { delete store[e.key]; return { value: undefined } })
@@ -18,7 +18,7 @@ function engine(on: Parameters<Parameters<typeof test>[1]>[1], jobs: object[] = 
   on('fs.exists', () => ({ value: true }))
   on('fs.read', () => ({ value: JSON.stringify({ jobs }) }))
   on('clock.every', () => ({ value: undefined }))
-  on('process.run', (_, e) => { onRun?.(e.argv); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
+  on('process.run', (_, e) => { onRun?.(e.argv, (e as { init?: { env?: Record<string, string> } }).init); return { value: { exitCode: 0, stdout: '', stderr: '' } } })
   on('ui.toast', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'codex-band' } }))
   on('session.id', () => ({ value: 'me' }))
@@ -256,3 +256,67 @@ test('Stop cancels the running job only on the confirming press; Details opens t
   expect(runs.some(a => a.includes(MINE))).toBe(true)
   await ui.unmount()
 })
+
+test('pop-ups: which status changes earn one', () => {
+  expect(notifyEvent(undefined, 'queued')).toBe('started')
+  expect(notifyEvent(undefined, 'running')).toBe('started')
+  expect(notifyEvent('queued', 'running')).toBe(null)
+  expect(notifyEvent('running', 'completed')).toBe('finished')
+  expect(notifyEvent(undefined, 'completed')).toBe('finished')
+  expect(notifyEvent('running', 'failed')).toBe('failed')
+  expect(notifyEvent('running', 'stalled')).toBe('stalled')
+  expect(notifyEvent('running', 'cancelled')).toBe(null)
+  expect(notifyEvent('completed', 'completed')).toBe(null)
+})
+
+test('pop-up text: short context, the brief, the task and how long it took', () => {
+  const now = Date.parse('2026-11-20T18:00:00Z')
+  const job = { id: 'task-1', kind: 'review', summary: 'Found 2 issues:\n- a race in sync', status: 'completed', phase: null, createdAt: '2026-11-20T17:56:00Z', startedAt: '2026-11-20T17:56:00Z', updatedAt: null, completedAt: '2026-11-20T18:00:00Z', workspace: 'my-repo', workspaceRoot: null, sessionId: 'me', threadId: null }
+  const command = 'node "/p/codex-companion.mjs" task --background --write "Review PR #42 for the login change"'
+  expect(briefTitle(command)).toBe('Review PR #42 for the login change')
+  const started = notifyText('started', { ...job, status: 'running', completedAt: null }, command, 'Tidy the docs', now)
+  expect(started.title).toBe('Codex review · PR #42 started')
+  expect(started.body).toBe('Review PR #42 for the login change\nFrom: Tidy the docs · my-repo')
+  const done = notifyText('finished', job, command, 'Tidy the docs', now)
+  expect(done.title).toBe('Codex review · PR #42 finished · 4 min')
+  expect(done.body.split('\n')[0]).toBe('Found 2 issues: - a race in sync')
+  expect(notifyText('failed', { ...job, summary: null, phase: 'model not available' }, '', '', now).body).toBe('model not available\nFrom: a Claude task · my-repo')
+})
+
+test('pop-up command: Windows toast links the row, macOS uses osascript arguments, others none', () => {
+  const link = jobLink('https://claude.ai/artifact/Mine456', 'task-1')
+  expect(link).toBe('https://claude.ai/artifact/Mine456#task-1')
+  const win = notifyCommand('windows', 'Codex <review> started', 'Fix "this" & that\nFrom: x', link)!
+  expect(win.argv[0]).toBe('powershell.exe')
+  expect(win.argv.join(' ')).not.toContain('Fix')
+  expect(win.env.CODEX_BAND_TOAST).toContain('launch="https://claude.ai/artifact/Mine456#task-1"')
+  expect(win.env.CODEX_BAND_TOAST).toContain('<text>Codex &lt;review&gt; started</text><text>Fix &quot;this&quot; &amp; that</text>')
+  expect(win.env.CODEX_BAND_TOAST).toContain('content="Open details"')
+  const mac = notifyCommand('macos', 'T', 'a\nb', link)!
+  expect(mac.argv.slice(-2)).toEqual(['T', 'a · b'])
+  expect(notifyCommand('linux', 'T', 'b', link)).toBe(null)
+  expect(notifyCommand('wsl', 'T', 'b', link)).toBe(null)
+})
+
+test('pop-up settings: read from the page, defaults for what it lacks', () => {
+  expect(parseNotify('{}')).toEqual({ on: true, started: true, finished: true, failed: true, stalled: true, longMinutes: 0 })
+  expect(parseNotify('{"notifyOn": false, "notifyStarted":false, "notifyLongMinutes": 30}')).toMatchObject({ on: false, started: false, finished: true, longMinutes: 30 })
+})
+
+for (const [label, store, expected] of [
+  ['on by default', {}, 1],
+  ['off on the page', { notify: { on: false } }, 0],
+  ['started switched off', { notify: { started: false } }, 0],
+] as const) {
+  test(`Windows: a new job of this session pops up once, with its row written (${label})`, async ($, on) => {
+    const toasts: Record<string, string>[] = []
+    const calls: Record<string, unknown>[] = []
+    engine(on, [runningJob()], e => { calls.push(e) }, (argv, init) => { if (argv[0] === 'powershell.exe') toasts.push(init?.env ?? {}) }, { pageUrl: MINE, ...store })
+    on('session.info', () => ({ value: { platform: 'windows', isHosted: false, transcriptPath: '/t' } }))
+    await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+    await (await $.ui.mount({ ...BAND, surface: 'desktop' })).unmount()
+    expect(calls.some(c => c.tool === 'ArtifactData' && c.action === 'set')).toBe(true)
+    expect(toasts.length).toBe(expected)
+    if (expected) expect(toasts[0]?.CODEX_BAND_TOAST).toContain(`${MINE}#review-1`)
+  })
+}

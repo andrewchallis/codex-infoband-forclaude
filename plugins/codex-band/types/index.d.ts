@@ -17,8 +17,9 @@ export type CodexJob = {
 // found: Codex job files exist here; isFromPage: none do, so the jobs are the requests page's rows (a cloud session).
 export type CodexSnapshot = { found: boolean; isFromPage: boolean; jobs: CodexJob[]; checkedAt: number }
 
-// Codex job id -> the status last written to the requests page and that row's version.
-export type LoggedRows = Record<string, { status: string; version: number }>
+// Codex job id -> the status last written to the requests page, that row's version, and whether the
+// still-running reminder has popped up.
+export type LoggedRows = Record<string, { status: string; version: number; reminded?: boolean }>
 
 declare module 'claude-code' {
   interface PluginState {

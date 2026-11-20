@@ -218,6 +218,7 @@ async function refreshSettings($: EngineInterface) {
     const m = /"autoHideMinutes"\s*:\s*(\d+)/.exec(got.text ?? '')
     const minutes = m ? Math.min(1440, Number(m[1])) : DEFAULT_HIDE_MINUTES
     await $.store.set(STORE_HIDE, minutes)
+    await $.store.set(STORE_NOTIFY, parseNotify(got.text ?? ''))
   } catch { /* the page is out of reach: keep the cached value */ }
 }
 
@@ -281,6 +282,149 @@ async function logJob($: EngineInterface, url: string, job: CodexJob, command: s
   return Number.isFinite(v) ? v : (known?.version ?? 1) + 1
 }
 
+// Pop-ups: a system notification when this session's Codex job starts, finishes, fails or stalls,
+// raised in the same step that writes the job's row, so they work even where no band is drawn
+// (a hidden Remote Control session). Windows shows a toast whose click opens the job's row on the
+// requests page; macOS shows a notification (no click link); elsewhere nothing.
+const STORE_NOTIFY = 'notify'
+export type NotifySettings = { on: boolean; started: boolean; finished: boolean; failed: boolean; stalled: boolean; longMinutes: number }
+export const DEFAULT_NOTIFY: NotifySettings = { on: true, started: true, finished: true, failed: true, stalled: true, longMinutes: 0 }
+export type NotifyEvent = 'started' | 'finished' | 'failed' | 'stalled' | 'long'
+
+// The page's settings document as notify settings; fields it lacks keep the defaults.
+export function parseNotify(text: string): NotifySettings {
+  const flag = (k: string, d: boolean) => {
+    const m = new RegExp(`"${k}"\\s*:\\s*(true|false)`).exec(text)
+    return m ? m[1] === 'true' : d
+  }
+  const long = /"notifyLongMinutes"\s*:\s*(\d+)/.exec(text)
+  return {
+    on: flag('notifyOn', DEFAULT_NOTIFY.on),
+    started: flag('notifyStarted', DEFAULT_NOTIFY.started),
+    finished: flag('notifyFinished', DEFAULT_NOTIFY.finished),
+    failed: flag('notifyFailed', DEFAULT_NOTIFY.failed),
+    stalled: flag('notifyStalled', DEFAULT_NOTIFY.stalled),
+    longMinutes: long ? Math.min(1440, Number(long[1])) : DEFAULT_NOTIFY.longMinutes,
+  }
+}
+
+async function notifySettings($: EngineInterface): Promise<NotifySettings> {
+  const v = await $.store.get(STORE_NOTIFY)
+  return v && typeof v === 'object' ? { ...DEFAULT_NOTIFY, ...(v as Partial<NotifySettings>) } : DEFAULT_NOTIFY
+}
+
+// Which pop-up a status change earns, if any. queued -> running is not a second start; a stop pressed by
+// the person (cancelled) needs no pop-up.
+export function notifyEvent(prev: string | undefined, status: string): NotifyEvent | null {
+  const isActive = (s?: string) => s === 'queued' || s === 'running'
+  if (isActive(status)) return isActive(prev) ? null : 'started'
+  if (status === prev) return null
+  if (status === 'completed') return 'finished'
+  if (status === 'failed') return 'failed'
+  if (status === 'stalled') return 'stalled'
+  return null
+}
+
+const oneLine = (s: string | null | undefined, n: number) => {
+  const line = (s ?? '').replace(/\s+/g, ' ').trim()
+  return line.length > n ? `${line.slice(0, n - 1).trimEnd()}…` : line
+}
+
+// The brief as a short, readable name: the companion command's own flags and quotes dropped.
+export function briefTitle(command: string) {
+  const text = command
+    .replace(/^.*?codex-companion(?:\.mjs)?["']?\s+\w+\s*/i, '')
+    .replace(/(^|\s)--[\w-]+(?:[= ](?!["'])\S+)?/g, ' ')
+    .replace(/^\/codex:\w+\s*/i, '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+  return oneLine(text.split(/\r?\n/).find(l => l.trim()) ?? '', 70)
+}
+
+// Short, plain text: it can show on a lock screen, so names and one-line summaries only, never code.
+export function notifyText(event: NotifyEvent, job: CodexJob, command: string, task: string, now: number) {
+  const pr = /\bPR\s*#?(\d+)|\/pull\/(\d+)/i.exec(command)
+  const prNo = pr ? pr[1] ?? pr[2] : ''
+  const what = `Codex ${job.kind}${prNo ? ` · PR #${prNo}` : ''}`
+  const start = Date.parse(job.startedAt ?? job.createdAt ?? '')
+  const end = Date.parse(job.completedAt ?? '') || now
+  const mins = Number.isFinite(start) ? Math.max(0, Math.round((end - start) / 60000)) : null
+  const took = mins === null ? '' : ` · ${mins < 1 ? 'under 1' : mins} min`
+  const title = {
+    started: `${what} started`,
+    finished: `${what} finished${took}`,
+    failed: `${what} failed${took}`,
+    stalled: `${what} stalled`,
+    long: `${what} still running${took}`,
+  }[event]
+  const lines: string[] = []
+  const brief = briefTitle(command)
+  if (event === 'finished' && job.summary) lines.push(oneLine(job.summary, 120))
+  else if (event === 'failed') lines.push(oneLine(job.summary || job.phase || 'Codex reported a failure.', 120))
+  else if (event === 'stalled') lines.push('No update for 2 hours. It may have stopped.')
+  if (brief && !(event === 'finished' && job.summary)) lines.unshift(brief)
+  lines.push(`From: ${oneLine(task, 40) || 'a Claude task'} · ${job.workspace}`)
+  return { title: oneLine(title, 80), body: lines.join('\n') }
+}
+
+const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+
+// The PowerShell AppUserModelID Windows knows, so the toast shows without an installed app of our own.
+const PS_APP_ID = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'
+// Fixed script: the toast's XML arrives in an environment variable, so no text of the job's is ever code.
+const PS_TOAST = [
+  '[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null',
+  '[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null',
+  '$d = New-Object Windows.Data.Xml.Dom.XmlDocument',
+  '$d.LoadXml($env:CODEX_BAND_TOAST)',
+  '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:CODEX_BAND_APP).Show([Windows.UI.Notifications.ToastNotification]::new($d))',
+].join('; ')
+
+export type Platform = 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown'
+
+// The command that raises the pop-up on this system, or null where there is none.
+export function notifyCommand(platform: Platform, title: string, body: string, link: string | null): { argv: string[]; env: Record<string, string> } | null {
+  if (platform === 'windows') {
+    const open = link ? ` activationType="protocol" launch="${xml(link)}"` : ''
+    const button = link ? `<actions><action content="Open details" activationType="protocol" arguments="${xml(link)}"/></actions>` : ''
+    const lines = body.split('\n').slice(0, 2).map(l => `<text>${xml(l)}</text>`).join('')
+    const toast = `<toast${open}><visual><binding template="ToastGeneric"><text>${xml(title)}</text>${lines}</binding></visual>${button}</toast>`
+    return { argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', PS_TOAST], env: { CODEX_BAND_TOAST: toast, CODEX_BAND_APP: PS_APP_ID } }
+  }
+  if (platform === 'macos') {
+    // The text goes in as arguments, never into the script.
+    return { argv: ['osascript', '-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body.replace(/\n/g, ' · ')], env: {} }
+  }
+  return null
+}
+
+async function platformOf($: EngineInterface): Promise<Platform> {
+  try {
+    const info = await $.session.info()
+    if (info.platform && !info.isHosted) return info.platform
+    if (info.isHosted) return 'unknown'
+  } catch { /* an engine without session info: fall back to the environment */ }
+  return (await $.env.get('OS')) === 'Windows_NT' ? 'windows' : 'unknown'
+}
+
+// The job's own row on the page: the page opens it, scrolls to it and highlights it.
+export const jobLink = (url: string | null, id: string) => (url ? `${url}#${encodeURIComponent(id)}` : null)
+
+export async function notifyJob($: EngineInterface, event: NotifyEvent | null, job: CodexJob, command: string, task: string, url: string | null) {
+  if (!event) return false
+  const s = await notifySettings($)
+  if (!s.on || (event !== 'long' && !s[event])) return false
+  const { title, body } = notifyText(event, job, command, task, Date.now())
+  const cmd = notifyCommand(await platformOf($), title, body, jobLink(url, job.id))
+  if (!cmd) return false
+  try {
+    const r = await $.process.run(cmd.argv, { env: cmd.env, timeoutMs: 15000 })
+    return r.exitCode === 0
+  } catch {
+    return false // no PowerShell or osascript here: the row is still written
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
@@ -299,11 +443,22 @@ export const register: Register = on => {
         const rows = await read($, logged)
         const command = await read($, lastCommand)
         const task = await read($, taskTitle)
+        const longMinutes = (await notifySettings($)).longMinutes
         for (const job of own) {
           const known = rows[job.id]
-          if (known?.status === job.status) continue
+          if (known?.status === job.status) {
+            // Optional reminder, once per job, for a job running past the set time.
+            const mins = minutesSince(job.startedAt, Date.now())
+            if (longMinutes > 0 && job.status === 'running' && !known.reminded && mins !== null && mins >= longMinutes) {
+              await update($, logged, all => ({ ...all, [job.id]: { ...known, reminded: true } }))
+              await notifyJob($, 'long', job, command, task, url)
+            }
+            continue
+          }
           const version = await logJob($, url, job, command, task, known)
-          if (version !== null) await update($, logged, all => ({ ...all, [job.id]: { status: job.status, version } }))
+          if (version === null) continue
+          await update($, logged, all => ({ ...all, [job.id]: { status: job.status, version, reminded: known?.reminded } }))
+          await notifyJob($, notifyEvent(known?.status, job.status), job, command, task, url)
         }
       } catch { /* the page is out of reach (offline, signed out): next scan */ } finally {
         isSyncing = false
