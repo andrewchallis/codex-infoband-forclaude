@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { briefTitle, isOwnPageCall, jobLink, jobsFromPage, notifyCommand, notifyEvent, notifyText, parseNotify } from '../hooks/register'
+import { briefTitle, isOwnPageCall, jobLink, jobsFromPage, notifyCommand, notifyEvent, notifyText, parseMoved, parseNotify } from '../hooks/register'
 
 const BAND = {
   plugin: 'codex-band',
@@ -255,6 +255,40 @@ test('Stop cancels the running job only on the confirming press; Details opens t
   await ui.press({ key: 'details' })
   expect(runs.some(a => a.includes(MINE))).toBe(true)
   await ui.unmount()
+})
+
+test('a moved page: its settings pointer is read, the mod switches to the new home and Details opens its tab', async ($, on) => {
+  const NEW = 'https://claude.ai/artifact/Board789'
+  const job = { id: 'task-9', status: 'running', kindLabel: 'task', updatedAt: new Date().toISOString(), sessionId: 'me', workspaceRoot: '/work/w' }
+  const runs: string[][] = []
+  const store: Record<string, unknown> = { pageUrl: MINE }
+  const asked: string[] = []
+  engine(on, [job], e => {
+    if (e.tool === 'ArtifactData' && e.collection === 'settings') {
+      asked.push(String(e.url))
+      return { text: e.url === MINE ? `{"movedTo": "${NEW}", "movedHash": "codex-", "autoHideMinutes": 10}` : '{"autoHideMinutes": 25}' }
+    }
+  }, argv => { runs.push([...argv]) }, store)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'codex-band', args: '' })
+  for (let i = 0; i < 50 && store.autoHideMinutes !== 25; i++) await new Promise(r => setTimeout(r, 10))
+  expect(asked[0]).toBe(MINE)
+  expect(asked).toContain(NEW)
+  expect(store.pageUrl).toBe(NEW)
+  expect(store.pageHashPrefix).toBe('codex-')
+  expect(store.autoHideMinutes).toBe(25)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'details' })
+  expect(runs.some(a => a.includes(`${NEW}#codex`))).toBe(true)
+  await ui.unmount()
+})
+
+test('moved pointer: only a claude.ai artifact address is followed', () => {
+  expect(parseMoved('{"movedTo":"https://claude.ai/artifact/Ro7Ab-c_1","movedHash":"codex-"}')).toEqual({ url: 'https://claude.ai/artifact/Ro7Ab-c_1', prefix: 'codex-' })
+  expect(parseMoved('{"movedTo":"https://claude.ai/artifact/Ro7"}')).toEqual({ url: 'https://claude.ai/artifact/Ro7', prefix: '' })
+  expect(parseMoved('{"movedTo":"https://evil.example/x"}')).toBe(null)
+  expect(parseMoved('{"autoHideMinutes": 10}')).toBe(null)
+  expect(jobLink('https://claude.ai/artifact/Ro7', 'task-1', 'codex-')).toBe('https://claude.ai/artifact/Ro7#codex-task-1')
 })
 
 test('pop-ups: which status changes earn one', () => {

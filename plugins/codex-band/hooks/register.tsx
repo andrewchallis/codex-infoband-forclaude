@@ -13,6 +13,8 @@ const PAGE_TITLE = 'Codex Band Requests'
 const PAGE_RULES = { db: { rules: [{ path: 'requests', read: 'view', write: 'owner' }, { path: 'settings', read: 'view', write: 'owner' }] } }
 const PAGE_CONTRACT = '0.2.96'
 const STORE_URL = 'pageUrl'
+// Set when the page has moved into another page as one of its tabs: the start of each row's #link there (e.g. "codex-").
+const STORE_PREFIX = 'pageHashPrefix'
 const STORE_LOCK = 'pageCreatingAt'
 // The page's "hide the bar after Codex is idle for" setting, in minutes (0: never), cached across sessions.
 const STORE_HIDE = 'autoHideMinutes'
@@ -74,6 +76,20 @@ async function storedPage($: EngineInterface) {
   return typeof url === 'string' && url ? url : null
 }
 
+async function storedPrefix($: EngineInterface) {
+  const p = await $.store.get(STORE_PREFIX)
+  return typeof p === 'string' && /^[a-z][a-z0-9-]*-$/.test(p) ? p : ''
+}
+
+// A page that has moved names its new home in its settings document: {"movedTo": "<artifact url>", "movedHash": "codex-"}.
+// The new home holds the same collections, so the mod simply follows the pointer and keeps working there.
+export function parseMoved(text: string): { url: string; prefix: string } | null {
+  const to = /"movedTo"\s*:\s*"(https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+)"/.exec(text)
+  if (!to) return null
+  const h = /"movedHash"\s*:\s*"([a-z][a-z0-9-]*-)"/.exec(text)
+  return { url: to[1], prefix: h ? h[1] : '' }
+}
+
 // Pre-approved: this mod's own reads and writes to its page's requests list, and its own artifact listing.
 // Creating the page is left to the usual permission prompt.
 export function isOwnPageCall(tool: string, input: unknown, url: string | null) {
@@ -117,8 +133,10 @@ export async function ensurePage($: EngineInterface, mayCreate = true) {
 
 // Opens the page in the person's browser, so Requests can be a real Button beside Stop and Hide.
 async function openPage($: EngineInterface) {
-  const url = await storedPage($)
-  if (!url) return $.ui.toast(`Your ${PAGE_TITLE} page is created with this session's first Codex job.`)
+  const page = await storedPage($)
+  if (!page) return $.ui.toast(`Your ${PAGE_TITLE} page is created with this session's first Codex job.`)
+  const prefix = await storedPrefix($)
+  const url = prefix ? `${page}#${prefix.slice(0, -1)}` : page
   const isWindows = (await $.env.get('OS')) === 'Windows_NT'
   const argv = isWindows ? ['rundll32', 'url.dll,FileProtocolHandler', url] : ['open', url]
   try {
@@ -209,12 +227,19 @@ async function hideMinutes($: EngineInterface) {
 }
 
 // Reads the page's settings document; a page with none saved keeps the default.
-async function refreshSettings($: EngineInterface) {
+async function refreshSettings($: EngineInterface, hops = 0) {
   const url = await storedPage($)
   if (!url) return
   try {
     const got: Call = await $.tool.call({ tool: 'ArtifactData', action: 'get', url, collection: 'settings', doc_id: 'page' })
     if (failed(got)) return
+    const moved = parseMoved(got.text ?? '')
+    if (moved && moved.url !== url && hops < 2) {
+      await $.store.set(STORE_URL, moved.url)
+      await $.store.set(STORE_PREFIX, moved.prefix)
+      lastPageReadAt = 0
+      return refreshSettings($, hops + 1)
+    }
     const m = /"autoHideMinutes"\s*:\s*(\d+)/.exec(got.text ?? '')
     const minutes = m ? Math.min(1440, Number(m[1])) : DEFAULT_HIDE_MINUTES
     await $.store.set(STORE_HIDE, minutes)
@@ -408,14 +433,14 @@ async function platformOf($: EngineInterface): Promise<Platform> {
 }
 
 // The job's own row on the page: the page opens it, scrolls to it and highlights it.
-export const jobLink = (url: string | null, id: string) => (url ? `${url}#${encodeURIComponent(id)}` : null)
+export const jobLink = (url: string | null, id: string, prefix = '') => (url ? `${url}#${prefix}${encodeURIComponent(id)}` : null)
 
 export async function notifyJob($: EngineInterface, event: NotifyEvent | null, job: CodexJob, command: string, task: string, url: string | null) {
   if (!event) return false
   const s = await notifySettings($)
   if (!s.on || (event !== 'long' && !s[event])) return false
   const { title, body } = notifyText(event, job, command, task, Date.now())
-  const cmd = notifyCommand(await platformOf($), title, body, jobLink(url, job.id))
+  const cmd = notifyCommand(await platformOf($), title, body, jobLink(url, job.id, await storedPrefix($)))
   if (!cmd) return false
   try {
     const r = await $.process.run(cmd.argv, { env: cmd.env, timeoutMs: 15000 })
